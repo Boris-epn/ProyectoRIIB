@@ -791,3 +791,12 @@
 :root[data-theme="dark"] .static-document b {
   background: #25282C;
 }
+
+.metrics-cut-form { display: grid; gap: .65rem; margin: 1.5rem 0; }
+.metrics-cut-form > div { display: flex; gap: .75rem; flex-wrap: wrap; }
+.metrics-cut-form input { color: inherit; background: transparent; border: 1px solid #777; border-radius: .5rem; padding: .65rem; font: inherit; }
+.metrics-cut-form button { padding: .65rem 1rem; border-radius: .5rem; border: 1px solid #777; cursor: pointer; font: inherit; }
+.metrics-cut-error { color: #ef9a9a; }
+.metrics-summary > p, .metrics-dense-status { line-height: 1.5; margin: .75rem 0; }
+.metrics-table-wrap { overflow-x: auto; }
+.metrics-table th, .metrics-table td { white-space: nowrap; }

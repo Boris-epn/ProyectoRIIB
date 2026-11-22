@@ -250,7 +250,7 @@ function mount(root, data) {
     } else if (r.model === "jaccard" || r.model === "tfidf") {
       value = hit.score * 100;
     } else {
-      value = (hit.score + 1) * 50;
+      return `Coseno ${hit.score.toFixed(4)}`;
     }
     value = Math.min(100, Math.max(0, value));
     return `${value.toFixed(1).replace(".", ",")} %`;

@@ -85,6 +85,10 @@ class SearchEngine:
         self.evaluation_groups: dict = {}
         self.evaluation_queries: dict = {}
         self.evaluation_classified: dict = {}
+        self.evaluation_profiles: dict = {}
+        self.evaluation_generation = 0
+        self.dense_evaluation_loading = False
+        self.dense_evaluation_error = ""
         self.dense = DenseRetriever(
             build_if_missing=env_flag("DENSE_BUILD_IF_MISSING", True),
         )
@@ -100,6 +104,18 @@ class SearchEngine:
         with self.lock:
             if self.loading:
                 raise RuntimeError("La importacion ya esta en progreso")
+            self.evaluation_generation += 1
+            self.evaluation_ready = False
+            self.evaluation_loading = False
+            self.evaluation_error = ""
+            self.evaluation_summary = {}
+            self.evaluation_groups = {}
+            self.evaluation_queries = {}
+            self.evaluation_classified = {}
+            self.evaluation_profiles = {}
+            self.dense_evaluation_loading = False
+            self.dense_evaluation_error = ""
+            self.dense.reset()
             self.loading = True
             self.error = ""
             self.ready = False
@@ -357,36 +373,8 @@ class SearchEngine:
             for position, grade in enumerate(grades, start=1)
         )
 
-    def evaluate_ranking(self, ranking: list[tuple[str, float]], judgments: dict[str, int], cuts=(5, 10, 20)) -> dict:
-        total_relevant = sum(grade >= 1 for grade in judgments.values())
-        ideal_grades = sorted(judgments.values(), reverse=True)
-        ranking_grades = []
-        cumulative_hits = [0]
-        hits = 0
-        precision_sum = 0.0
-        maximum_cut = max(cuts)
-
-        for position, (doc_id, _) in enumerate(ranking, start=1):
-            grade = judgments.get(str(doc_id), 0)
-            if grade >= 1:
-                hits += 1
-                precision_sum += hits / position
-            if position <= maximum_cut:
-                ranking_grades.append(grade)
-                cumulative_hits.append(hits)
-
-        metrics = {"AP": precision_sum / total_relevant if total_relevant else 0.0}
-        for cut in cuts:
-            hits_cut = cumulative_hits[min(cut, len(ranking_grades))]
-            ideal_cut = self.dcg(ideal_grades[:cut])
-            metrics[f"Precision@{cut}"] = hits_cut / cut
-            metrics[f"Recall@{cut}"] = hits_cut / total_relevant if total_relevant else 0.0
-            metrics[f"NDCG@{cut}"] = (
-                self.dcg(ranking_grades[:cut]) / ideal_cut if ideal_cut else 0.0
-            )
-        return metrics
-
-    def evaluate_cuts(self, cuts: tuple[int, ...]) -> dict:
+    @staticmethod
+    def validate_cuts(cuts):
         if not 1 <= len(cuts) <= 3:
             raise ValueError("Ingresa de uno a tres cortes.")
         if any(type(cut) is not int or cut <= 0 for cut in cuts):
@@ -394,36 +382,100 @@ class SearchEngine:
         if len(set(cuts)) != len(cuts):
             raise ValueError("Los cortes deben ser distintos.")
 
-        rankers = {
-            "Jaccard": lambda text: self.ranking_jaccard(text, len(self.documents)),
-            "TF-IDF": lambda text: self.ranking_tfidf(text, len(self.documents)),
-            "BM25": lambda text: self.ranking_bm25(text, len(self.documents)),
+    @staticmethod
+    def ranking_profile(ranking, judgments):
+        # Solo guardar posiciones relevantes: permite cambiar k sin repetir la
+        # búsqueda ni retener todos los rankings del corpus en memoria.
+        relevant = [(position, judgments[str(doc_id)])
+                    for position, (doc_id, _) in enumerate(ranking, start=1)
+                    if judgments.get(str(doc_id), 0) >= 1]
+        return {"size": len(ranking), "relevant": relevant,
+                "ideal": sorted((g for g in judgments.values() if g >= 1), reverse=True)}
+
+    def evaluate_profile(self, profile, cuts):
+        relevant, ideal = profile["relevant"], profile["ideal"]
+        total = len(ideal)
+        found = len(relevant)
+        result = {
+            "AP": sum(hit / position for hit, (position, _) in enumerate(relevant, 1)) / total if total else 0.0,
+            "Precision": found / profile["size"] if profile["size"] else 0.0,
+            "Recall": found / total if total else 0.0,
         }
-        per_query = {}
+        for cut in cuts:
+            selected = [(position, grade) for position, grade in relevant if position <= cut]
+            ideal_dcg = self.dcg(ideal[:cut])
+            result[f"Precision@{cut}"] = len(selected) / cut
+            result[f"Recall@{cut}"] = len(selected) / total if total else 0.0
+            result[f"NDCG@{cut}"] = (
+                sum((2 ** grade - 1) / math.log2(position + 1) for position, grade in selected)
+                / ideal_dcg if ideal_dcg else 0.0
+            )
+        return result
+
+    def evaluate_ranking(self, ranking, judgments, cuts=(5, 10, 20)):
+        self.validate_cuts(cuts)
+        return self.evaluate_profile(self.ranking_profile(ranking, judgments), cuts)
+
+    def evaluate_cuts(self, cuts: tuple[int, ...]) -> dict:
+        self.validate_cuts(cuts)
+        with self.lock:
+            profiles = dict(self.evaluation_profiles)
+        per_query = {
+            name: {qid: self.evaluate_profile(profile, cuts) for qid, profile in queries.items()}
+            for name, queries in profiles.items()
+        }
         summary = {}
-        classified = self.evaluation_classified
-        for model_name, ranker in rankers.items():
-            detail = {}
-            for query_id, data in classified.items():
-                ranking = ranker(data["text"])
-                detail[query_id] = self.evaluate_ranking(
-                    ranking,
-                    data["judgments"],
-                    cuts,
-                )
-            per_query[model_name] = detail
-            if not detail:
-                summary[model_name] = {"MAP": 0.0}
-                continue
-            model_summary = {
-                "MAP": sum(row["AP"] for row in detail.values()) / len(detail)
+        for name, detail in per_query.items():
+            columns = ["AP", "Precision", "Recall"] + [
+                f"{metric}@{cut}" for cut in cuts for metric in ("Precision", "Recall", "NDCG")
+            ]
+            summary[name] = {
+                "MAP" if column == "AP" else column:
+                sum(row[column] for row in detail.values()) / len(detail) if detail else 0.0
+                for column in columns
             }
-            for cut in cuts:
-                for metric in ("Precision", "Recall", "NDCG"):
-                    column = f"{metric}@{cut}"
-                    model_summary[column] = sum(row[column] for row in detail.values()) / len(detail)
-            summary[model_name] = model_summary
         return {"summary": summary, "per_query": per_query}
+
+    def ensure_dense_evaluation(self):
+        with self.lock:
+            if (not self.evaluation_ready or self.dense_evaluation_loading
+                    or self.dense_evaluation_error or "Embeddings" in self.evaluation_profiles):
+                return
+            self.dense_evaluation_loading = True
+            generation = self.evaluation_generation
+            documents = self.documents
+            classified = self.evaluation_classified
+        threading.Thread(target=self._evaluate_dense, args=(generation, documents, classified), daemon=True).start()
+
+    def _evaluate_dense(self, generation, documents, classified):
+        try:
+            while True:
+                with self.lock:
+                    if generation != self.evaluation_generation:
+                        return
+                    if self.dense.ensure_ready(documents):
+                        break
+                    status = self.dense.status()
+                if status["state"] == "error":
+                    raise RuntimeError(status["error"])
+                time.sleep(0.2)
+            profiles = {}
+            for qid, data in classified.items():
+                if generation != self.evaluation_generation:
+                    return
+                ranking = self.dense.search(data["text"], len(documents))
+                profiles[qid] = self.ranking_profile(ranking, data["judgments"])
+            with self.lock:
+                if generation == self.evaluation_generation:
+                    self.evaluation_profiles["Embeddings"] = profiles
+        except Exception as exc:
+            with self.lock:
+                if generation == self.evaluation_generation:
+                    self.dense_evaluation_error = str(exc)
+        finally:
+            with self.lock:
+                if generation == self.evaluation_generation:
+                    self.dense_evaluation_loading = False
 
     def classify_query_type(self, text: str) -> str:
         patterns = (
@@ -444,6 +496,7 @@ class SearchEngine:
             self.evaluation_loading = True
             self.evaluation_ready = False
             self.evaluation_error = ""
+            generation = self.evaluation_generation
         try:
             from datasets import load_dataset
 
@@ -493,34 +546,28 @@ class SearchEngine:
                 groups["length"][length_group].append(query_id)
                 groups["type"][data["query_type"]].append(query_id)
 
-            cutoffs = (5, 10, 20)
-            per_query = {}
-            summary = {}
+            profiles = {}
             rankers = {
-                "Jaccard": lambda text: self.ranking_jaccard(text, len(self.documents)),
-                "TF-IDF": lambda text: self.ranking_tfidf(text, len(self.documents)),
-                "BM25": lambda text: self.ranking_bm25(text, len(self.documents)),
+                "Jaccard": self.ranking_jaccard,
+                "TF-IDF": self.ranking_tfidf,
+                "BM25": self.ranking_bm25,
             }
-            for model_name, ranker in rankers.items():
-                detail = {}
+            for name, ranker in rankers.items():
+                profiles[name] = {}
                 for query_id, data in classified.items():
-                    ranking = ranker(data["text"])
-                    detail[query_id] = self.evaluate_ranking(ranking, data["judgments"], cutoffs)
-                per_query[model_name] = detail
-                if not detail:
-                    summary[model_name] = {"MAP": 0.0}
-                    continue
-                model_summary = {
-                    "MAP": sum(row["AP"] for row in detail.values()) / len(detail)
-                }
-                for cut in cutoffs:
-                    for metric in ("Precision", "Recall", "NDCG"):
-                        column = f"{metric}@{cut}"
-                        model_summary[column] = sum(row[column] for row in detail.values()) / len(detail)
-                summary[model_name] = model_summary
+                    with self.lock:
+                        if generation != self.evaluation_generation:
+                            return
+                        ranking = ranker(data["text"], len(self.documents))
+                    profiles[name][query_id] = self.ranking_profile(ranking, data["judgments"])
 
             with self.lock:
+                if generation != self.evaluation_generation:
+                    return
                 self.evaluation_ready = True
+                self.evaluation_profiles = profiles
+                evaluated = self.evaluate_cuts((5, 10, 20))
+                summary, per_query = evaluated["summary"], evaluated["per_query"]
                 self.evaluation_summary = summary
                 self.evaluation_classified = classified
                 self.evaluation_groups = {
@@ -545,11 +592,13 @@ class SearchEngine:
                 }
         except Exception as exc:
             with self.lock:
-                self.evaluation_ready = False
-                self.evaluation_error = str(exc)
+                if generation == self.evaluation_generation:
+                    self.evaluation_ready = False
+                    self.evaluation_error = str(exc)
         finally:
             with self.lock:
-                self.evaluation_loading = False
+                if generation == self.evaluation_generation:
+                    self.evaluation_loading = False
 
     def format_hits(self, results: list[tuple[str, float]], query: str) -> list[dict]:
         hits = []
@@ -653,7 +702,6 @@ def corpus_status():
             "error": engine.error,
             "count": len(engine.documents),
             "source": engine.source,
-            "dense": engine.dense_status(),
             "dense": engine.dense_status(),
         })
 
@@ -807,25 +855,20 @@ def compare():
 
 @app.route("/api/metrics", methods=["GET"])
 def metrics():
-    cuts_raw = request.args.get("cuts", "")
-    cuts = tuple(
-        int(value)
-        for value in cuts_raw.split(",")
-        if value.strip()
-    ) if cuts_raw else (5, 10, 20)
-    cut_error = None
-    if not 1 <= len(cuts) <= 3:
-        cut_error = "Ingresa de uno a tres cortes."
-    elif any(type(cut) is not int or cut <= 0 for cut in cuts):
-        cut_error = "Cada corte debe ser un entero positivo."
-    elif len(set(cuts)) != len(cuts):
-        cut_error = "Los cortes deben ser distintos."
+    cuts_raw = request.args.get("cuts")
+    try:
+        cuts = tuple(int(value.strip()) for value in cuts_raw.split(",")) if cuts_raw is not None else (5, 10, 20)
+        engine.validate_cuts(cuts)
+    except (ValueError, TypeError) as exc:
+        return jsonify({"cut_error": "Ingresa de uno a tres enteros positivos y distintos.", "error": str(exc)}), 400
 
-    dynamic = None
-    if cut_error is None:
-        dynamic = engine.evaluate_cuts(cuts)
-
+    engine.ensure_dense_evaluation()
     with engine.lock:
+        dynamic = engine.evaluate_cuts(cuts)
+        queries = {
+            qid: {**data, "metrics": {name: rows[qid] for name, rows in dynamic["per_query"].items() if qid in rows}}
+            for qid, data in engine.evaluation_queries.items()
+        }
         return jsonify({
             "available": engine.ready,
             "document_count": len(engine.documents),
@@ -834,13 +877,16 @@ def metrics():
             "evaluation_ready": engine.evaluation_ready,
             "evaluation_loading": engine.evaluation_loading,
             "evaluation_error": engine.evaluation_error,
-            "summary": engine.evaluation_summary,
-            "dynamic_summary": dynamic["summary"] if dynamic else engine.evaluation_summary,
-            "dynamic_per_query": dynamic["per_query"] if dynamic else {},
+            "dense_evaluation_loading": engine.dense_evaluation_loading,
+            "dense_evaluation_error": engine.dense_evaluation_error,
+            "dense": engine.dense_status(),
+            "summary": dynamic["summary"],
+            "dynamic_summary": dynamic["summary"],
+            "dynamic_per_query": dynamic["per_query"],
             "dynamic_cuts": list(cuts),
-            "cut_error": cut_error,
+            "cut_error": None,
             "groups": engine.evaluation_groups,
-            "queries": engine.evaluation_queries,
+            "queries": queries,
         })
 
 

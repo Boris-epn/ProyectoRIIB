@@ -24,6 +24,10 @@ let recibir;
 
 let reintentoBusqueda = null;
 let reintentoComparar = null;
+let reintentoMetricas = null;
+let cortesMetricas = [5, 10, 20];
+let consultaMetrica = null;
+let metricasVersion = 0;
 
 const DENSE_PENDIENTE = new Set(["idle", "loading", "building"]);
 
@@ -70,6 +74,9 @@ async function establecerSolicitud(solicitud) {
 }
 
 async function mostrarExtras(vista) {
+  clearTimeout(reintentoMetricas);
+  if (vista !== "comparar") clearTimeout(reintentoComparar);
+  if (vista !== "metricas") metricasVersion += 1;
   const extras = document.querySelector("#demo-extras");
   const root = document.querySelector(".goggle");
   const results = root?.querySelector(".results");
@@ -162,24 +169,10 @@ async function mostrarExtras(vista) {
       extras.innerHTML = `<section class="static-view"><p>No se pudo comparar: ${escapeHtml(error.message)}</p></section>`;
     }
   } else if (vista === "metricas") {
-    try {
-      const respuesta = await fetch("/api/metrics");
-      const datos = await respuesta.json();
-      extras.innerHTML = `
-        <section class="static-view static-metrics" aria-label="Metricas">
-          <div class="metrics-head">
-            <div>
-              <strong>Métricas FiQA</strong>
-              <span>${datos.document_count || 0} documentos · ${Object.keys(datos.queries || {}).length} consultas evaluadas</span>
-            </div>
-            <span class="metrics-status">${datos.evaluation_ready ? "Evaluación completa" : datos.evaluation_loading ? "Calculando..." : "Pendiente"}</span>
-          </div>
-          ${renderEvaluation(datos)}
-        </section>`;
-      setupMetricsTabs(extras);
-    } catch (error) {
-      extras.innerHTML = `<section class="static-view"><p>No se pudieron cargar las métricas.</p></section>`;
-    }
+    if (root) root.dataset.view = "metricas";
+    if (results) results.style.display = "none";
+    if (main && !main.contains(extras)) main.append(extras);
+    await cargarMetricas(extras);
   } else {
     if (root) root.dataset.view = "buscar";
     if (results) results.style.removeProperty("display");
@@ -187,261 +180,154 @@ async function mostrarExtras(vista) {
   }
 }
 
+async function cargarMetricas(extras) {
+  const version = ++metricasVersion;
+  try {
+    const response = await fetch(`/api/metrics?cuts=${cortesMetricas.join(",")}`);
+    const datos = await response.json();
+    if (version !== metricasVersion || estado.view !== "metricas") return;
+    if (!response.ok) throw new Error(datos.cut_error || datos.error);
+    const count = Object.keys(datos.queries || {}).length;
+    const pending = datos.evaluation_loading || datos.dense_evaluation_loading;
+    extras.innerHTML = `
+      <section class="static-view static-metrics" aria-label="Evaluación de los modelos">
+        <div class="metrics-head"><div><strong>Evaluación de los modelos</strong>
+          <span>${datos.document_count || 0} documentos · ${count} consultas evaluadas</span></div>
+          <span class="metrics-status">${pending ? "Calculando..." : datos.evaluation_ready ? "Evaluación disponible" : "Pendiente"}</span>
+        </div>
+        <form class="metrics-cut-form">
+          <label for="metrics-cuts">Cortes para Precision@k y Recall@k</label>
+          <div><input id="metrics-cuts" type="text" value="${cortesMetricas.join(", ")}" aria-describedby="metrics-cuts-help" required>
+          <button type="submit">Aplicar cortes</button></div>
+          <small id="metrics-cuts-help">Elige de uno a tres enteros positivos distintos, separados por comas. Ejemplo: 3, 15, 50.</small>
+          <p class="metrics-cut-error" role="alert" hidden></p>
+        </form>
+        ${renderEvaluation(datos)}
+      </section>`;
+    extras.querySelector(".metrics-cut-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const values = extras.querySelector("#metrics-cuts").value.split(",").map(value => value.trim());
+      const cuts = values.map(Number);
+      const error = extras.querySelector(".metrics-cut-error");
+      if (cuts.length < 1 || cuts.length > 3 || values.some(value => !/^\d+$/.test(value))
+          || cuts.some(cut => !Number.isSafeInteger(cut) || cut < 1) || new Set(cuts).size !== cuts.length) {
+        error.textContent = "Ingresa de uno a tres enteros positivos y distintos.";
+        error.hidden = false;
+        return;
+      }
+      cortesMetricas = cuts;
+      clearTimeout(reintentoMetricas);
+      cargarMetricas(extras);
+    });
+    setupMetricsTabs(extras, datos);
+    if (pending || (datos.available && !datos.evaluation_ready && !datos.evaluation_error)) {
+      const refresh = () => {
+        // No interrumpir al usuario mientras escribe los cortes o una consulta.
+        if (extras.contains(document.activeElement) && document.activeElement?.tagName === "INPUT") {
+          reintentoMetricas = setTimeout(refresh, 2500);
+        } else {
+          cargarMetricas(extras);
+        }
+      };
+      reintentoMetricas = setTimeout(refresh, 2500);
+    }
+  } catch (error) {
+    if (version === metricasVersion) extras.innerHTML = `<section class="static-view"><p>No se pudieron cargar las métricas: ${escapeHtml(error.message)}</p></section>`;
+  }
+}
+
+function metricsTable(rows, cuts, aggregate = false) {
+  const columns = [...(aggregate ? ["MAP", "Precision", "Recall"] : ["AP"]),
+    ...cuts.flatMap(cut => [`Precision@${cut}`, `Recall@${cut}`])];
+  return `<div class="metrics-table-wrap"><table class="metrics-table">
+    <thead><tr><th>Modelo</th>${columns.map(name => `<th>${name}</th>`).join("")}</tr></thead>
+    <tbody>${Object.entries(rows).map(([name, metrics]) => `<tr><th scope="row">${escapeHtml(name)}</th>
+      ${columns.map(column => `<td>${Number(metrics[column] || 0).toFixed(4)}</td>`).join("")}</tr>`).join("")}</tbody>
+  </table></div>`;
+}
+
 function renderEvaluation(datos) {
   if (!datos.evaluation_ready) {
-    return `
-      <div class="metrics-evaluation metrics-empty">
-        ${datos.evaluation_error ? `<p>No se pudo calcular: ${escapeHtml(datos.evaluation_error)}</p>` : "<p>Calculando métricas FIQA…</p>"}
-      </div>`;
+    return `<div class="metrics-evaluation metrics-empty"><p>${datos.evaluation_error
+      ? `No se pudo calcular: ${escapeHtml(datos.evaluation_error)}`
+      : datos.available ? "Calculando métricas FiQA..." : "Importa el corpus FiQA para evaluar los modelos."}</p></div>`;
   }
-
-  const lengthGroups = Object.entries(datos.groups.length || {});
-  const typeGroups = Object.entries(datos.groups.type || {});
-  const queryEntries = Object.entries(datos.queries || {});
-
+  const cuts = datos.dynamic_cuts;
+  const count = Object.keys(datos.queries || {}).length;
+  const denseNotice = datos.dense_evaluation_error
+    ? `No se pudo evaluar Embeddings: ${escapeHtml(datos.dense_evaluation_error)}`
+    : datos.dense_evaluation_loading ? `Embeddings: ${escapeHtml(datos.dense?.message || "evaluando consultas...")}` : "";
   return `
     <div class="metrics-summary">
-      <div class="metrics-section-head">
-        <strong>Resumen global</strong>
-        <span>648 consultas · MAP</span>
-      </div>
-      <div class="metrics-map-chart">
-        ${Object.entries(datos.summary).map(([model, metrics]) => `
-          <div class="metrics-map-row">
-            <span>${escapeHtml(model)}</span>
-            <div class="metrics-map-track"><i style="width:${Math.min(100, Number(metrics.MAP || 0) * 100)}%"></i></div>
-            <strong>${Number(metrics.MAP || 0).toFixed(4)}</strong>
-          </div>`).join("")}
-      </div>
+      <div class="metrics-section-head"><strong>Resumen global</strong><span>${count} consultas</span></div>
+      <p>Evaluación con los juicios de relevancia oficiales de FiQA. MAP, Precision y Recall son promedios por consulta.</p>
+      <p>Precision y Recall generales usan todo el ranking recuperado; las columnas @k usan los cortes elegidos. AP y MAP usan todo el ranking y no dependen de esos cortes.</p>
+      ${denseNotice ? `<p class="metrics-dense-status" role="status">${denseNotice}</p>` : ""}
+      ${metricsTable(datos.summary, cuts, true)}
     </div>
-
     <div class="metrics-classification">
-      <div class="metrics-section-head">
-        <strong>Clasificación de consultas</strong>
-        <span>Cortas ≤ ${datos.groups.cuts?.short || 0} · Medianas ≤ ${datos.groups.cuts?.medium || 0} tokens</span>
-      </div>
+      <div class="metrics-section-head"><strong>Clasificación de consultas</strong>
+        <span>Cortas ≤ ${datos.groups.cuts?.short || 0} · Medianas ≤ ${datos.groups.cuts?.medium || 0} tokens</span></div>
       <div class="metrics-tabs" role="tablist">
         <button type="button" class="metrics-tab is-active" data-metrics-tab="length" role="tab" aria-selected="true">Longitud</button>
         <button type="button" class="metrics-tab" data-metrics-tab="type" role="tab" aria-selected="false">Tipo de pregunta</button>
       </div>
-      <div class="metrics-tab-panel" data-metrics-panel="length">
-        ${lengthGroups.map(([name, ids]) => `
-          <div class="metrics-group-line">
-            <span class="rank num">•</span>
-            <span>${escapeHtml(name)}</span>
-            <strong>${ids.length}</strong>
-            <small>consultas</small>
-          </div>`).join("")}
-      </div>
-      <div class="metrics-tab-panel" data-metrics-panel="type" hidden>
-        ${typeGroups.map(([name, ids]) => `
-          <div class="metrics-group-line">
-            <span class="rank num">•</span>
-            <span>${escapeHtml(name)}</span>
-            <strong>${ids.length}</strong>
-            <small>consultas</small>
-          </div>`).join("")}
-      </div>
+      ${["length", "type"].map(group => `<div class="metrics-tab-panel" data-metrics-panel="${group}" ${group === "type" ? "hidden" : ""}>
+        ${Object.entries(datos.groups[group] || {}).map(([name, ids]) => `<div class="metrics-group-line"><span>${escapeHtml(name)}</span><strong>${ids.length}</strong><small>consultas</small></div>`).join("")}
+      </div>`).join("")}
     </div>
-
     <div class="metrics-query-analysis">
-      <div class="metrics-section-head">
-        <strong>Análisis por consulta</strong>
-        <span>${queryEntries.length} consultas disponibles</span>
-      </div>
-      <div class="metrics-query-selector">
-        <span>Buscar por índice o texto de la consulta</span>
+      <div class="metrics-section-head"><strong>Análisis por consulta</strong><span>${count} consultas disponibles</span></div>
+      <div class="metrics-query-selector"><label for="metrics-query-search">Buscar por índice o texto de la consulta</label>
         <input id="metrics-query-search" type="search" autocomplete="off" placeholder="Ej. 10034 o mutual fund">
-        <div class="metrics-query-suggestions" id="metrics-query-suggestions" role="listbox" aria-label="Consultas encontradas"></div>
-      </div>
-      <div class="metrics-query-detail" id="metrics-query-detail"></div>
+        <div class="metrics-query-suggestions" id="metrics-query-suggestions" role="listbox" aria-label="Consultas encontradas" hidden></div>
+      </div><div class="metrics-query-detail" id="metrics-query-detail"></div>
     </div>`;
 }
 
-function setupMetricsTabs(root) {
-  root.querySelectorAll(".metrics-tab").forEach((tab) => {
+function setupMetricsTabs(root, datos) {
+  root.querySelectorAll(".metrics-tab").forEach(tab => {
     tab.addEventListener("click", () => {
-      root.querySelectorAll(".metrics-tab").forEach((item) => {
+      root.querySelectorAll(".metrics-tab").forEach(item => {
         const active = item === tab;
         item.classList.toggle("is-active", active);
         item.setAttribute("aria-selected", String(active));
       });
-      root.querySelectorAll(".metrics-tab-panel").forEach((panel) => {
+      root.querySelectorAll(".metrics-tab-panel").forEach(panel => {
         panel.hidden = panel.dataset.metricsPanel !== tab.dataset.metricsTab;
       });
     });
   });
-
   const search = root.querySelector("#metrics-query-search");
+  if (!search) return;
   const suggestions = root.querySelector("#metrics-query-suggestions");
-  if (!search || !suggestions) return;
   const detail = root.querySelector("#metrics-query-detail");
-  let queryEntries = [];
-  const fetchAndRender = async (queryId) => {
-    try {
-      const response = await fetch("/api/metrics");
-      const datos = await response.json();
-      queryEntries = Object.entries(datos.queries || {});
-      renderQueryDetail(datos, queryId, detail);
-    } catch (error) {
-      detail.innerHTML = `<p class="metrics-empty-text">No se pudo cargar la consulta.</p>`;
-    }
+  const entries = Object.entries(datos.queries || {});
+  const select = qid => {
+    consultaMetrica = qid;
+    search.value = `${qid} - ${datos.queries[qid].text}`;
+    suggestions.hidden = true;
+    renderQueryDetail(datos, qid, detail);
   };
-
-  const showMatches = async (term = "") => {
-    try {
-      const response = await fetch("/api/metrics");
-      const datos = await response.json();
-      queryEntries = Object.entries(datos.queries || {});
-      const normalized = term.trim().toLowerCase();
-      const matches = queryEntries.filter(([qid, query]) =>
-        !normalized ||
-        qid.toLowerCase().includes(normalized) ||
-        query.text.toLowerCase().includes(normalized)
-      ).slice(0, 648);
-      suggestions.innerHTML = matches.map(([qid, query]) => `
-        <button type="button" role="option" data-query-id="${escapeHtml(qid)}">
-          <b>${escapeHtml(qid)}</b>
-          <span>${escapeHtml(query.text)}</span>
-        </button>`).join("");
-      suggestions.hidden = matches.length === 0;
-      suggestions.querySelectorAll("[data-query-id]").forEach((button) => {
-        button.addEventListener("click", () => {
-          search.value = `${button.dataset.queryId} — ${button.querySelector("span").textContent}`;
-          suggestions.hidden = true;
-          fetchAndRender(button.dataset.queryId);
-        });
-      });
-    } catch (error) {
-      suggestions.hidden = true;
-    }
-  };
-
-  search.addEventListener("focus", () => showMatches(search.value));
-  search.addEventListener("click", () => showMatches(search.value));
-  search.addEventListener("input", () => {
+  const showMatches = () => {
     const term = search.value.trim().toLowerCase();
-    if (!term) {
-      showMatches("");
-      return;
-    }
-    showMatches(term);
-  });
-  fetch("/api/metrics")
-    .then((response) => response.json())
-    .then((datos) => {
-      queryEntries = Object.entries(datos.queries || {});
-      const firstQueryId = queryEntries[0]?.[0];
-      if (firstQueryId) fetchAndRender(firstQueryId);
-    })
-    .catch(() => {
-      detail.innerHTML = `<p class="metrics-empty-text">No se pudo cargar la consulta.</p>`;
-    });
+    const matches = entries.filter(([qid, query]) => !term || qid.toLowerCase().includes(term) || query.text.toLowerCase().includes(term));
+    suggestions.innerHTML = matches.map(([qid, query]) => `<button type="button" role="option" data-query-id="${escapeHtml(qid)}"><b>${escapeHtml(qid)}</b><span>${escapeHtml(query.text)}</span></button>`).join("");
+    suggestions.hidden = matches.length === 0;
+    suggestions.querySelectorAll("[data-query-id]").forEach(button => button.addEventListener("click", () => select(button.dataset.queryId)));
+  };
+  search.addEventListener("input", showMatches);
+  search.addEventListener("focus", () => { search.select(); showMatches(); });
+  const initial = datos.queries[consultaMetrica] ? consultaMetrica : entries[0]?.[0];
+  if (initial) select(initial);
 }
 
 function renderQueryDetail(datos, queryId, container) {
   const query = datos.queries?.[queryId];
-  if (!query) {
-    container.innerHTML = `<p class="metrics-empty-text">Consulta no disponible.</p>`;
-    return;
-  }
-
-  const modelNames = ["Jaccard", "TF-IDF", "BM25"];
-  const defaultCuts = [5, 10, 20];
-  const cutControls = defaultCuts.map((cut, index) => `
-    <label class="metrics-cut-control">
-      <span>Corte ${index + 1}</span>
-      <input type="number" min="1" max="100" value="${cut}" data-metrics-cut="${index}">
-    </label>`).join("");
-  const columns = defaultCuts.flatMap((cut) => [`Precision@${cut}`, `Recall@${cut}`]);
-  container.innerHTML = `
-    <div class="metrics-query-summary">
-      <div>
-        <span class="metrics-query-id">${escapeHtml(queryId)}</span>
-        <p>${escapeHtml(query.text)}</p>
-      </div>
-      <div class="metrics-query-tags">
-        <p class="metrics-procedencia">
-          <span class="rank num">•</span>
-          <span>${escapeHtml(query.length_group)}</span>
-          <span>${escapeHtml(query.query_type)}</span>
-          <span>${query.token_count} tokens</span>
-        </p>
-      </div>
-    </div>
-    <div class="metrics-table-wrap">
-      <div class="metrics-cut-controls">${cutControls}</div>
-      <table class="metrics-table query-metrics-table">
-        <thead>
-          <tr><th>Modelo</th>${columns.map((name) => `<th>${escapeHtml(name)}</th>`).join("")}<th>AP</th></tr>
-        </thead>
-        <tbody>
-          ${modelNames.map((modelName) => {
-            const metrics = query.metrics[modelName] || {};
-            return `<tr>
-              <th scope="row">${escapeHtml(modelName)}</th>
-              ${columns.map((name) => `<td>${Number(metrics[name] || 0).toFixed(4)}</td>`).join("")}
-              <td>${Number(metrics.AP || 0).toFixed(4)}</td>
-            </tr>`;
-          }).join("")}
-        </tbody>
-      </table>
-    </div>
-    <div class="metrics-cut-status" hidden></div>`;
-  container.querySelectorAll("[data-metrics-cut]").forEach((input) => {
-    input.addEventListener("change", async () => {
-      const inputs = [...container.querySelectorAll("[data-metrics-cut]")]
-        .map((item) => Number(item.value));
-      const table = container.querySelector(".query-metrics-table");
-      const headers = [...table.querySelectorAll("thead th")].slice(1);
-      inputs.forEach((cut, cutIndex) => {
-        if (headers[cutIndex * 2] && headers[cutIndex * 2 + 1]) {
-          headers[cutIndex * 2].textContent = `Precision@${cut}`;
-          headers[cutIndex * 2 + 1].textContent = `Recall@${cut}`;
-        }
-      });
-
-      const valid = inputs.length >= 1
-        && inputs.every((cut) => Number.isInteger(cut) && cut > 0)
-        && new Set(inputs).size === inputs.length;
-      if (!valid) {
-        table.querySelectorAll("tbody tr").forEach((row) => {
-          inputs.forEach((_, cutIndex) => {
-            const precisionCell = row.children[1 + cutIndex * 2];
-            const recallCell = row.children[2 + cutIndex * 2];
-            if (precisionCell) precisionCell.textContent = "####";
-            if (recallCell) recallCell.textContent = "####";
-          });
-        });
-        return;
-      }
-
-      try {
-        const response = await fetch(`/api/metrics?cuts=${inputs.join(",")}`);
-        const dynamic = await response.json();
-        if (dynamic.cut_error) return;
-        modelNames.forEach((modelName, modelIndex) => {
-          const row = table.querySelectorAll("tbody tr")[modelIndex];
-          const metrics = dynamic.dynamic_per_query?.[modelName]?.[queryId] || {};
-          inputs.forEach((cut, cutIndex) => {
-            const precisionCell = row?.children[1 + cutIndex * 2];
-            const recallCell = row?.children[2 + cutIndex * 2];
-            if (precisionCell) precisionCell.textContent = Number(metrics[`Precision@${cut}`] || 0).toFixed(4);
-            if (recallCell) recallCell.textContent = Number(metrics[`Recall@${cut}`] || 0).toFixed(4);
-          });
-        });
-      } catch (error) {
-        table.querySelectorAll("tbody tr").forEach((row) => {
-          inputs.forEach((_, cutIndex) => {
-            const precisionCell = row.children[1 + cutIndex * 2];
-            const recallCell = row.children[2 + cutIndex * 2];
-            if (precisionCell) precisionCell.textContent = "####";
-            if (recallCell) recallCell.textContent = "####";
-          });
-        });
-      }
-    });
-  });
+  if (!query) return;
+  container.innerHTML = `<div class="metrics-query-summary"><div><span class="metrics-query-id">${escapeHtml(queryId)}</span>
+    <p>${escapeHtml(query.text)}</p></div><div class="metrics-query-tags"><p>${escapeHtml(query.length_group)} · ${escapeHtml(query.query_type)} · ${query.token_count} tokens</p></div></div>
+    ${metricsTable(query.metrics, datos.dynamic_cuts)}`;
 }
 
 function escapeHtml(value) {
@@ -456,6 +342,7 @@ function escapeHtml(value) {
 
 function comparisonScore(model, hit) {
   if (model === "bm25") return hit.score.toFixed(2);
+  if (model === "dense") return `Coseno ${hit.score.toFixed(4)}`;
   return `${(hit.score * 100).toFixed(1).replace(".", ",")} %`;
 }
 
