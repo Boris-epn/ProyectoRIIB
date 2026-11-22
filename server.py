@@ -1,5 +1,6 @@
 import json
 import math
+import os
 import re
 import threading
 import time
@@ -7,6 +8,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
+
+# Solo importa numpy: sentence-transformers, torch y faiss se cargan al primer uso de "dense".
+from dense_retrieval import DenseRetriever
 
 
 ROOT = Path(__file__).resolve().parent
@@ -35,6 +39,13 @@ except (ImportError, LookupError):
     STOPWORDS = FALLBACK_STOPWORDS
 
 
+def env_flag(name: str, default: bool) -> bool:
+    value = os.environ.get(name, "").strip().lower()
+    if not value:
+        return default
+    return value not in {"0", "false", "no", "off"}
+
+
 class SearchEngine:
     def __init__(self) -> None:
         self.documents: list[dict] = []
@@ -52,6 +63,10 @@ class SearchEngine:
         self.source = ""
         self.lock = threading.RLock()
         self.relevant_ids: set[str] = set()
+        # No carga nada aquí: el modelo y el índice se preparan con ensure_ready().
+        self.dense = DenseRetriever(
+            build_if_missing=env_flag("DENSE_BUILD_IF_MISSING", True),
+        )
 
     def tokenize(self, text: str) -> list[str]:
         return [
@@ -223,6 +238,31 @@ class SearchEngine:
         results = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
         return self.format_hits(results[:k], query)
 
+    def search_dense(self, query: str, k: int) -> list[dict]:
+        # Solo consulta un índice ya preparado: DenseRetriever.search devuelve []
+        # si no está listo y nunca carga ni construye nada.
+        return self.format_hits(self.dense.search(query, k), query)
+
+    def dense_ready(self) -> bool:
+        """Prepara "dense" sin bloquear. No llamar con self.lock tomado."""
+        return self.dense.ensure_ready(self.documents)
+
+    def dense_status(self) -> dict:
+        status = self.dense.status()
+        state = status["state"]
+        if state == "ready":
+            message = ""
+        elif state == "building":
+            message = (
+                f"Generando embeddings… "
+                f"{format_count(status['done'])}/{format_count(status['total'])}"
+            )
+        elif state == "error":
+            message = f"Error en el índice semántico: {status['error']}"
+        else:
+            message = "Cargando índice semántico…"
+        return {**status, "message": message}
+
     def format_hits(self, results: list[tuple[str, float]], query: str) -> list[dict]:
         hits = []
         terms = set(self.tokenize(query))
@@ -257,6 +297,8 @@ class SearchEngine:
                 return self.search_tfidf(query, k)
             if model == "bm25":
                 return self.search_bm25(query, k)
+            if model == "dense":
+                return self.search_dense(query, k)
             return []
 
     def suggestion(self, query: str) -> str:
@@ -295,6 +337,10 @@ class SearchEngine:
         return previous[-1]
 
 
+def format_count(value: int) -> str:
+    return f"{value:,}".replace(",", " ")
+
+
 engine = SearchEngine()
 
 
@@ -323,6 +369,7 @@ def corpus_status():
             "error": engine.error,
             "count": len(engine.documents),
             "source": engine.source,
+            "dense": engine.dense_status(),
         })
 
 
@@ -403,6 +450,21 @@ def search():
             "error": status,
         })
 
+    # Fuera de engine.lock: ensure_ready solo lanza un hilo y responde al instante.
+    if model == "dense" and not engine.dense_ready():
+        dense_status = engine.dense_status()
+        return jsonify({
+            "seq": seq,
+            "key": f"{model}|{k}|{query}",
+            "model": model,
+            "elapsed_ms": (time.perf_counter() - started) * 1000,
+            "terms": engine.tokenize(query),
+            "suggestion": "",
+            "hits": [],
+            "error": dense_status["message"],
+            "dense": dense_status,
+        })
+
     hits = engine.search(query, model, k)
     return jsonify({
         "seq": seq,
@@ -429,12 +491,16 @@ def compare():
             "loading": engine.loading,
             "results": {},
         })
+    dense_ready = engine.dense_ready()  # fuera de engine.lock; no bloquea
+    results = {
+        model: engine.search(query, model, k)
+        for model in ("jaccard", "tfidf", "bm25")
+    }
+    results["dense"] = engine.search(query, "dense", k) if dense_ready else []
     return jsonify({
         "query": query,
-        "results": {
-            model: engine.search(query, model, k)
-            for model in ("jaccard", "tfidf", "bm25")
-        },
+        "results": results,
+        "dense": engine.dense_status(),
     })
 
 

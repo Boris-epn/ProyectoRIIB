@@ -22,6 +22,32 @@ let estado = {
 };
 let recibir;
 
+// Mientras el índice de Embeddings se prepara, se repite la misma petición.
+const ESPERA_REINTENTO = 2000;
+const DENSE_PENDIENTE = new Set(["idle", "loading", "building"]);
+const densePendiente = (datos) => DENSE_PENDIENTE.has(datos?.dense?.state);
+let reintentoBusqueda = null;
+let reintentoComparar = null;
+let turnoComparar = 0;
+
+function programarReintentoBusqueda(response) {
+  clearTimeout(reintentoBusqueda);
+  if (!densePendiente(response)) return;
+  const seq = estado.seq;
+  reintentoBusqueda = setTimeout(async () => {
+    if (estado.seq !== seq) return;  // el usuario cambió de consulta o de modelo
+    try {
+      const respuesta = await buscar(estado);
+      if (estado.seq !== seq) return;
+      // Mismo seq y sin subir nav: el front lo trata como respuesta a la búsqueda actual.
+      recibir?.({ initial: { ...estado }, response: respuesta });
+      programarReintentoBusqueda(respuesta);
+    } catch {
+      // Un fallo de red detiene los reintentos; la próxima búsqueda lo mostrará.
+    }
+  }, ESPERA_REINTENTO);
+}
+
 document.documentElement.dataset.theme = "dark";
 document.title = "goggle";
 
@@ -36,6 +62,7 @@ async function buscar(solicitud) {
 }
 
 async function establecerSolicitud(solicitud) {
+  clearTimeout(reintentoBusqueda);
   estado = { ...estado, ...solicitud };
   try {
     const response = await buscar(estado);
@@ -43,6 +70,7 @@ async function establecerSolicitud(solicitud) {
       initial: { ...estado, nav: estado.nav + 1 },
       response,
     });
+    if (response.seq === estado.seq) programarReintentoBusqueda(response);
   } catch (error) {
     recibir?.({
       initial: { ...estado, nav: estado.nav + 1 },
@@ -60,10 +88,12 @@ async function establecerSolicitud(solicitud) {
   mostrarExtras(estado.view);
 }
 
-async function mostrarExtras(vista) {
+async function mostrarExtras(vista, reintento = false) {
+  clearTimeout(reintentoComparar);
+  const turno = ++turnoComparar;
   const extras = document.querySelector("#demo-extras");
   if (vista === "comparar") {
-    extras.innerHTML = `<section class="static-view"><p>Cargando comparacion...</p></section>`;
+    if (!reintento) extras.innerHTML = `<section class="static-view"><p>Cargando comparacion...</p></section>`;
     if (!estado.q.trim()) {
       extras.innerHTML = "";
       return;
@@ -75,11 +105,20 @@ async function mostrarExtras(vista) {
         body: JSON.stringify({ q: estado.q, k: estado.k }),
       });
       const datos = await respuesta.json();
+      if (reintento && turno !== turnoComparar) return;  // llegó tarde: ya hay otra comparación
       if (datos.error) {
         extras.innerHTML = `<section class="static-view"><p>${datos.error}</p></section>`;
         return;
       }
-      const nombres = { jaccard: "Jaccard", tfidf: "TF-IDF", bm25: "BM25" };
+      if (densePendiente(datos)) {
+        const firma = JSON.stringify([estado.q, estado.k]);
+        reintentoComparar = setTimeout(() => {
+          if (estado.view === "comparar" && JSON.stringify([estado.q, estado.k]) === firma) {
+            mostrarExtras("comparar", true);
+          }
+        }, ESPERA_REINTENTO);
+      }
+      const nombres = { jaccard: "Jaccard", tfidf: "TF-IDF", bm25: "BM25", dense: "Embeddings" };
       extras.innerHTML = `
         <section class="static-view static-compare" aria-label="Comparacion">
           <div class="static-controls">
@@ -96,7 +135,7 @@ async function mostrarExtras(vista) {
                     <div><strong>Documento ${escapeHtml(hit.doc_id)}</strong>
                     <p>${escapeHtml(hit.text.slice(0, 180))}${hit.text.length > 180 ? "…" : ""}</p>
                     <small>${hit.score.toFixed(4)}</small></div>
-                  </div>`).join("") || "<div class=\"static-document\"><p>Sin resultados</p></div>"}
+                  </div>`).join("") || `<div class="static-document"><p>${modelo === "dense" && densePendiente(datos) ? escapeHtml(datos.dense.message) : "Sin resultados"}</p></div>`}
               </article>`).join("")}
           </div>
         </section>`;

@@ -1,3 +1,6 @@
 Flask>=3.0,<4
 datasets>=3.0,<5
 nltk>=3.9,<4
+numpy>=2.4,<3
+sentence-transformers>=6.3,<7
+faiss-cpu>=1.16,<2
