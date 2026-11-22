@@ -20,7 +20,7 @@ Los archivos JSON deben contener una lista de documentos con `_id`, `title` y `t
 ## Evaluación de los modelos
 
 La vista **Métricas** permite elegir de uno a tres cortes positivos distintos
-(por ejemplo, `3, 15, 50`). Los cortes se aplican al resumen global y al análisis
+(por ejemplo, `3, 15, 50`). El resumen global muestra MAP, Precision y Recall. Los cortes se aplican al análisis
 por consulta para Jaccard, TF-IDF, BM25 y Embeddings.
 
 - `Precision@k`: documentos relevantes en los primeros k resultados, dividido

@@ -70,7 +70,15 @@ class SentenceTransformerEncoder:
                 if self._model is None:
                     from sentence_transformers import SentenceTransformer
 
-                    self._model = SentenceTransformer(self.model_name, device=self.device)
+                    # Usar primero los archivos descargados sin consultar la red.
+                    # No cambiar HF_HUB_OFFLINE: el corpus puede necesitar conexión.
+                    try:
+                        self._model = SentenceTransformer(
+                            self.model_name, device=self.device, local_files_only=True
+                        )
+                    except OSError:
+                        # Primera ejecución: descargar solo si falta la copia local.
+                        self._model = SentenceTransformer(self.model_name, device=self.device)
         return self._model
 
     def encode(self, texts: Sequence[str]) -> np.ndarray:

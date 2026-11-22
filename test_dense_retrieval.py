@@ -16,6 +16,7 @@ import numpy as np
 import server
 from dense_retrieval import (
     DenseRetriever,
+    SentenceTransformerEncoder,
     corpus_fingerprint,
     document_text,
     normalize_documents,
@@ -86,6 +87,27 @@ def wait_until(predicate, timeout=10.0):
             return True
         time.sleep(0.01)
     return False
+
+
+class EncoderLoadingTests(unittest.TestCase):
+    def test_cached_model_does_not_use_online_loading(self):
+        constructor = mock.Mock(return_value=object())
+        module = mock.Mock(SentenceTransformer=constructor)
+        with mock.patch.dict(sys.modules, {"sentence_transformers": module}):
+            encoder = SentenceTransformerEncoder(model_name="cached")
+            loaded = encoder.load()
+            self.assertIs(encoder.load(), loaded)
+        constructor.assert_called_once_with("cached", device=None, local_files_only=True)
+
+    def test_missing_model_falls_back_to_download(self):
+        constructor = mock.Mock(side_effect=[OSError("not cached"), object()])
+        module = mock.Mock(SentenceTransformer=constructor)
+        with mock.patch.dict(sys.modules, {"sentence_transformers": module}):
+            SentenceTransformerEncoder(model_name="missing").load()
+        self.assertEqual(constructor.call_args_list, [
+            mock.call("missing", device=None, local_files_only=True),
+            mock.call("missing", device=None),
+        ])
 
 
 class DocumentPreparationTests(unittest.TestCase):

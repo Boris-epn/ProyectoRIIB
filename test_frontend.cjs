@@ -14,13 +14,16 @@ const data = {
 };
 context.data = data;
 const html = vm.runInContext('renderEvaluation(data)', context);
-for (const name of ['Jaccard', 'TF-IDF', 'BM25', 'Embeddings', 'MAP', 'Precision@3', 'Recall@15']) assert(html.includes(name));
-assert(!html.includes('Precision@5'));
+for (const name of ['Jaccard', 'TF-IDF', 'BM25', 'Embeddings', 'MAP', 'Precision', 'Recall']) assert(html.includes(name));
+assert(!html.includes('Precision@3'));
+assert(!html.includes('Recall@15'));
 assert(!html.includes('648'));
 const container = {};
 context.container = container;
 vm.runInContext('renderQueryDetail(data, "q1", container)', context);
 assert(container.innerHTML.includes('Embeddings'));
+assert(container.innerHTML.includes('Precision@3'));
+assert(container.innerHTML.includes('Recall@15'));
 assert(container.innerHTML.includes('0.7500'));
 assert(container.innerHTML.includes('&lt;script&gt;'));
 assert(!container.innerHTML.includes('<script>'));

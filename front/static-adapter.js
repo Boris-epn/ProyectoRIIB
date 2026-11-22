@@ -196,7 +196,7 @@ async function cargarMetricas(extras) {
           <span class="metrics-status">${pending ? "Calculando..." : datos.evaluation_ready ? "Evaluación disponible" : "Pendiente"}</span>
         </div>
         <form class="metrics-cut-form">
-          <label for="metrics-cuts">Cortes para Precision@k y Recall@k</label>
+          <label for="metrics-cuts">Cortes para Precision@k y Recall@k por consulta</label>
           <div><input id="metrics-cuts" type="text" value="${cortesMetricas.join(", ")}" aria-describedby="metrics-cuts-help" required>
           <button type="submit">Aplicar cortes</button></div>
           <small id="metrics-cuts-help">Elige de uno a tres enteros positivos distintos, separados por comas. Ejemplo: 3, 15, 50.</small>
@@ -237,7 +237,7 @@ async function cargarMetricas(extras) {
 }
 
 function metricsTable(rows, cuts, aggregate = false) {
-  const columns = [...(aggregate ? ["MAP", "Precision", "Recall"] : ["AP"]),
+  const columns = aggregate ? ["MAP", "Precision", "Recall"] : ["AP",
     ...cuts.flatMap(cut => [`Precision@${cut}`, `Recall@${cut}`])];
   return `<div class="metrics-table-wrap"><table class="metrics-table">
     <thead><tr><th>Modelo</th>${columns.map(name => `<th>${name}</th>`).join("")}</tr></thead>
@@ -261,7 +261,7 @@ function renderEvaluation(datos) {
     <div class="metrics-summary">
       <div class="metrics-section-head"><strong>Resumen global</strong><span>${count} consultas</span></div>
       <p>Evaluación con los juicios de relevancia oficiales de FiQA. MAP, Precision y Recall son promedios por consulta.</p>
-      <p>Precision y Recall generales usan todo el ranking recuperado; las columnas @k usan los cortes elegidos. AP y MAP usan todo el ranking y no dependen de esos cortes.</p>
+      <p>Precision y Recall generales usan todo el ranking recuperado; las métricas @k del análisis por consulta usan los cortes elegidos. AP y MAP usan todo el ranking y no dependen de esos cortes.</p>
       ${denseNotice ? `<p class="metrics-dense-status" role="status">${denseNotice}</p>` : ""}
       ${metricsTable(datos.summary, cuts, true)}
     </div>
