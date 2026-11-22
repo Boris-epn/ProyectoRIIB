@@ -10,6 +10,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory
 
 from dense_retrieval import DenseRetriever
+from evaluation_analysis import build_evaluation_analysis
 
 
 ROOT = Path(__file__).resolve().parent
@@ -89,6 +90,7 @@ class SearchEngine:
         self.evaluation_generation = 0
         self.dense_evaluation_loading = False
         self.dense_evaluation_error = ""
+        self.dense_evaluation_profiles: dict = {}
         self.dense = DenseRetriever(
             build_if_missing=env_flag("DENSE_BUILD_IF_MISSING", True),
         )
@@ -115,6 +117,7 @@ class SearchEngine:
             self.evaluation_profiles = {}
             self.dense_evaluation_loading = False
             self.dense_evaluation_error = ""
+            self.dense_evaluation_profiles = {}
             self.dense.reset()
             self.loading = True
             self.error = ""
@@ -465,6 +468,10 @@ class SearchEngine:
                     return
                 ranking = self.dense.search(data["text"], len(documents))
                 profiles[qid] = self.ranking_profile(ranking, data["judgments"])
+                with self.lock:
+                    if generation != self.evaluation_generation:
+                        return
+                    self.dense_evaluation_profiles[qid] = profiles[qid]
             with self.lock:
                 if generation == self.evaluation_generation:
                     self.evaluation_profiles["Embeddings"] = profiles
@@ -865,6 +872,13 @@ def metrics():
     engine.ensure_dense_evaluation()
     with engine.lock:
         dynamic = engine.evaluate_cuts(cuts)
+        if "Embeddings" not in dynamic["per_query"]:
+            # Publicar cada consulta terminada sin presentar un MAP parcial
+            # como si fuera el promedio global de toda la colección de prueba.
+            dynamic["per_query"]["Embeddings"] = {
+                qid: engine.evaluate_profile(profile, cuts)
+                for qid, profile in engine.dense_evaluation_profiles.items()
+            }
         queries = {
             qid: {**data, "metrics": {name: rows[qid] for name, rows in dynamic["per_query"].items() if qid in rows}}
             for qid, data in engine.evaluation_queries.items()
@@ -879,6 +893,10 @@ def metrics():
             "evaluation_error": engine.evaluation_error,
             "dense_evaluation_loading": engine.dense_evaluation_loading,
             "dense_evaluation_error": engine.dense_evaluation_error,
+            "dense_evaluation_progress": {
+                "done": len(engine.dense_evaluation_profiles),
+                "total": len(engine.evaluation_classified),
+            },
             "dense": engine.dense_status(),
             "summary": dynamic["summary"],
             "dynamic_summary": dynamic["summary"],
@@ -887,6 +905,10 @@ def metrics():
             "cut_error": None,
             "groups": engine.evaluation_groups,
             "queries": queries,
+            "analysis": build_evaluation_analysis(
+                dynamic["per_query"], engine.evaluation_classified,
+                engine.evaluation_groups, engine.evaluation_profiles,
+            ),
         })
 
 

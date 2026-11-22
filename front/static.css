@@ -800,3 +800,13 @@
 .metrics-summary > p, .metrics-dense-status { line-height: 1.5; margin: .75rem 0; }
 .metrics-table-wrap { overflow-x: auto; }
 .metrics-table th, .metrics-table td { white-space: nowrap; }
+
+.metrics-group-performance, .metrics-semantic-comparison { margin: 2rem 0; }
+.metrics-group-performance p, .metrics-semantic-comparison p { line-height: 1.5; margin: .8rem 0; }
+.metrics-group-performance select, .metrics-semantic-comparison select { font: inherit; color: inherit; background: #252a2f; border: 1px solid #777; border-radius: .4rem; padding: .4rem; }
+.metrics-observations { margin: 1.25rem 0; }
+.metrics-observations li { line-height: 1.6; }
+.metrics-outcomes { display: flex; gap: 1.25rem; flex-wrap: wrap; margin: 1rem 0; }
+.metrics-case-list { margin: 1.5rem 0; }
+.metrics-case-table td:first-child { white-space: normal; min-width: 18rem; max-width: 34rem; }
+.metrics-case-table button { font: inherit; cursor: pointer; border: 1px solid #777; border-radius: .4rem; padding: .35rem .6rem; color: inherit; background: transparent; }

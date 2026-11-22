@@ -1,4 +1,5 @@
 import sys
+import threading
 import time
 import types
 import unittest
@@ -103,6 +104,42 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(response['summary']['Embeddings']['Recall@3'], 1)
         self.assertEqual(response['queries']['q1']['metrics']['Embeddings']['Precision@1'], 1)
         self.assertEqual(dense.search.call_count, 2)
+        self.assertTrue(response['analysis']['semantic']['ready'])
+        self.assertEqual(response['analysis']['semantic']['comparisons']['BM25']['count'], 2)
+        self.assertIn('Embeddings', response['analysis']['by_group']['type'][-1]['scores'])
+
+    def test_dense_query_results_arrive_before_global_summary(self):
+        blocked, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        dense = mock.Mock()
+        dense.ensure_ready.return_value = True
+        dense.status.return_value = {"state": "ready"}
+
+        def search(text, k):
+            if text == "unknownword":
+                blocked.set()
+                release.wait(5)
+            return [("c", .9), ("a", .8), ("b", .1)]
+
+        dense.search.side_effect = search
+        self.engine.dense = dense
+        self.engine.ensure_dense_evaluation()
+        self.assertTrue(blocked.wait(5))
+        try:
+            data = self.client.get('/api/metrics?cuts=1,3').get_json()
+            self.assertEqual(data['dense_evaluation_progress'], {"done": 1, "total": 2})
+            self.assertNotIn('Embeddings', data['summary'])
+            self.assertFalse(data['analysis']['semantic']['ready'])
+            self.assertEqual(data['queries']['q1']['metrics']['Embeddings']['Precision@1'], 1)
+            self.assertNotIn('Embeddings', data['queries']['q2']['metrics'])
+        finally:
+            release.set()
+        deadline = time.monotonic() + 5
+        while self.engine.dense_evaluation_loading and time.monotonic() < deadline:
+            time.sleep(.01)
+        complete = self.client.get('/api/metrics?cuts=3').get_json()
+        self.assertEqual(complete['dense_evaluation_progress']['done'], 2)
+        self.assertEqual(complete['summary']['Embeddings']['Recall@3'], 1)
 
     def test_dense_failure_preserves_lexical_metrics(self):
         dense = mock.Mock()

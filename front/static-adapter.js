@@ -27,6 +27,8 @@ let reintentoComparar = null;
 let reintentoMetricas = null;
 let cortesMetricas = [5, 10, 20];
 let consultaMetrica = null;
+let agrupacionMetricas = "type";
+let referenciaSemantica = "BM25";
 let metricasVersion = 0;
 
 const DENSE_PENDIENTE = new Set(["idle", "loading", "building"]);
@@ -236,14 +238,81 @@ async function cargarMetricas(extras) {
   }
 }
 
-function metricsTable(rows, cuts, aggregate = false) {
+function metricsTable(rows = {}, cuts, aggregate = false, datos = {}) {
   const columns = aggregate ? ["MAP", "Precision", "Recall"] : ["AP",
     ...cuts.flatMap(cut => [`Precision@${cut}`, `Recall@${cut}`])];
   return `<div class="metrics-table-wrap"><table class="metrics-table">
     <thead><tr><th>Modelo</th>${columns.map(name => `<th>${name}</th>`).join("")}</tr></thead>
-    <tbody>${Object.entries(rows).map(([name, metrics]) => `<tr><th scope="row">${escapeHtml(name)}</th>
-      ${columns.map(column => `<td>${Number(metrics[column] || 0).toFixed(4)}</td>`).join("")}</tr>`).join("")}</tbody>
+    <tbody>${["Jaccard", "TF-IDF", "BM25", "Embeddings"].map(name => {
+      const metrics = rows[name];
+      if (!metrics) {
+        const progress = datos.dense_evaluation_progress;
+        const status = name === "Embeddings"
+          ? datos.dense_evaluation_error ? `Error: ${datos.dense_evaluation_error}`
+            : datos.dense_evaluation_loading
+              ? datos.dense?.state === "ready"
+                ? `Evaluando consultas: ${progress?.done || 0}/${progress?.total || 0}`
+                : datos.dense?.message || "Preparando Embeddings..."
+              : "Pendiente de evaluación"
+          : "Pendiente de evaluación";
+        return `<tr><th scope="row">${escapeHtml(name)}</th><td colspan="${columns.length}" role="status">${escapeHtml(status)}</td></tr>`;
+      }
+      return `<tr><th scope="row">${escapeHtml(name)}</th>
+        ${columns.map(column => `<td>${Number(metrics[column] || 0).toFixed(4)}</td>`).join("")}</tr>`;
+    }).join("")}</tbody>
   </table></div>`;
+}
+
+const NOMBRES_GRUPOS = {
+  comparacion: "Comparación", definicion: "Definición", procedimiento: "Procedimiento",
+  explicacion: "Explicación", otras: "Otras", cortas: "Cortas", medianas: "Medianas", largas: "Largas",
+};
+const nombreGrupo = value => NOMBRES_GRUPOS[value] || value;
+
+function renderGroupPerformance(datos) {
+  const analysis = datos.analysis;
+  const rows = analysis?.by_group?.[agrupacionMetricas] || [];
+  if (!rows.length) return "<p>Sin consultas clasificadas para analizar.</p>";
+  const models = ["Jaccard", "TF-IDF", "BM25", "Embeddings"];
+  return `<p>MAP por grupo: el mayor valor indica mejor ordenamiento de los documentos relevantes. Cada consulta pesa lo mismo dentro de su grupo.</p>
+    <p>${analysis.semantic?.ready ? "Evaluación de los cuatro modelos disponible." : "Comparación provisional entre los modelos terminados; Embeddings se incorporará al completar su evaluación."}</p>
+    <div class="metrics-table-wrap"><table class="metrics-table">
+      <thead><tr><th>Grupo</th><th>Consultas</th>${models.map(name => `<th>MAP ${name}</th>`).join("")}<th>Mayor MAP</th></tr></thead>
+      <tbody>${rows.map(row => `<tr><th scope="row">${escapeHtml(nombreGrupo(row.group))}</th><td>${row.count}</td>
+        ${models.map(name => `<td>${row.scores[name] === undefined ? "—" : Number(row.scores[name]).toFixed(4)}</td>`).join("")}
+        <td>${row.winners.length ? `${row.winners.length > 1 ? "Empate: " : ""}${row.winners.map(escapeHtml).join(", ")}` : "Sin datos"}</td></tr>`).join("")}</tbody>
+    </table></div>
+    <div class="metrics-observations"><strong>Tipos de consulta donde destaca cada modelo</strong>
+      <ul>${models.map(name => {
+        const best = analysis.best_types?.[name];
+        return `<li>${name}: ${best ? `su mayor MAP observado es ${Number(best.MAP).toFixed(4)} en ${best.groups.map(group => escapeHtml(nombreGrupo(group))).join(", ")}.` : "evaluación pendiente."}</li>`;
+      }).join("")}</ul>
+    </div>
+    <p>Las etiquetas de pregunta se asignan mediante patrones y son aproximadas. Compara también el número de consultas: estos resultados son descriptivos y no demuestran que un modelo sea siempre mejor para ese tipo.</p>`;
+}
+
+function renderSemanticComparison(datos) {
+  const comparison = datos.analysis?.semantic?.comparisons?.[referenciaSemantica];
+  if (!comparison) return `<p role="status">${datos.dense_evaluation_error
+    ? `No se pudo completar Embeddings: ${escapeHtml(datos.dense_evaluation_error)}`
+    : "Los casos estarán disponibles cuando termine la evaluación de Embeddings, para comparar los mismos conjuntos de consultas."}</p>`;
+  if (!comparison.count) return "<p>No hay consultas evaluadas en común para esta comparación.</p>";
+  const signed = value => `${value > 0 ? "+" : ""}${Number(value).toFixed(4)}`;
+  const table = (cases, improves) => `<div class="metrics-case-list">
+    <h3>${improves ? "Casos donde Embeddings mejora" : "Casos donde Embeddings empeora"}</h3>
+    ${cases.length ? `<div class="metrics-table-wrap"><table class="metrics-table metrics-case-table">
+      <thead><tr><th>Consulta</th><th>AP Embeddings</th><th>AP ${referenciaSemantica}</th><th>ΔAP</th><th>Primer relevante</th></tr></thead>
+      <tbody>${cases.map(item => `<tr><td><button type="button" data-analysis-query="${escapeHtml(item.query_id)}">Ver consulta ${escapeHtml(item.query_id)}</button>
+        <p>${escapeHtml(item.text)}</p><small>${escapeHtml(nombreGrupo(item.query_type))}</small></td>
+        <td>${Number(item.dense_ap).toFixed(4)}</td><td>${Number(item.baseline_ap).toFixed(4)}</td>
+        <td>${signed(item.delta_ap)}</td><td>Embeddings: ${item.first_relevant_dense ?? "no recuperado"}<br>${referenciaSemantica}: ${item.first_relevant_baseline ?? "no recuperado"}</td></tr>`).join("")}</tbody>
+    </table></div>` : `<p>No se encontraron casos donde Embeddings ${improves ? "mejore" : "empeore"} respecto a ${referenciaSemantica}.</p>`}
+  </div>`;
+  return `<p>Comparación por AP sobre las mismas ${comparison.count} consultas y sus qrels. ΔAP = AP de Embeddings − AP de ${referenciaSemantica}.</p>
+    <div class="metrics-outcomes"><span>Mejora: <b>${comparison.wins}</b></span><span>Empeora: <b>${comparison.losses}</b></span><span>Empata: <b>${comparison.ties}</b></span></div>
+    <p>Diferencia media de AP: <strong>${signed(comparison.mean_delta_ap)}</strong>. Se muestran hasta cinco casos por dirección, ordenados por la mayor diferencia absoluta.</p>
+    ${table(comparison.improvements, true)}${table(comparison.regressions, false)}
+    <p>Las posiciones del primer relevante aportan evidencia del ranking, aunque AP considera todos los documentos relevantes. Estas diferencias no prueban por sí solas que la causa sean sinónimos o ambigüedad; eso requiere revisar los textos.</p>`;
 }
 
 function renderEvaluation(datos) {
@@ -263,7 +332,7 @@ function renderEvaluation(datos) {
       <p>Evaluación con los juicios de relevancia oficiales de FiQA. MAP, Precision y Recall son promedios por consulta.</p>
       <p>Precision y Recall generales usan todo el ranking recuperado; las métricas @k del análisis por consulta usan los cortes elegidos. AP y MAP usan todo el ranking y no dependen de esos cortes.</p>
       ${denseNotice ? `<p class="metrics-dense-status" role="status">${denseNotice}</p>` : ""}
-      ${metricsTable(datos.summary, cuts, true)}
+      ${metricsTable(datos.summary, cuts, true, datos)}
     </div>
     <div class="metrics-classification">
       <div class="metrics-section-head"><strong>Clasificación de consultas</strong>
@@ -276,6 +345,16 @@ function renderEvaluation(datos) {
         ${Object.entries(datos.groups[group] || {}).map(([name, ids]) => `<div class="metrics-group-line"><span>${escapeHtml(name)}</span><strong>${ids.length}</strong><small>consultas</small></div>`).join("")}
       </div>`).join("")}
     </div>
+    <section class="metrics-group-performance" aria-label="Rendimiento por tipo de consulta">
+      <div class="metrics-section-head"><strong>¿En qué consultas funciona mejor cada modelo?</strong>
+        <label>Agrupar por <select id="metrics-grouping"><option value="type" ${agrupacionMetricas === "type" ? "selected" : ""}>Tipo de pregunta</option><option value="length" ${agrupacionMetricas === "length" ? "selected" : ""}>Longitud</option></select></label></div>
+      <div id="metrics-group-performance">${renderGroupPerformance(datos)}</div>
+    </section>
+    <section class="metrics-semantic-comparison" aria-label="Mejoras y pérdidas de recuperación semántica">
+      <div class="metrics-section-head"><strong>Embeddings frente a modelos léxicos</strong>
+        <label>Comparar con <select id="metrics-semantic-baseline"><option ${referenciaSemantica === "BM25" ? "selected" : ""}>BM25</option><option ${referenciaSemantica === "TF-IDF" ? "selected" : ""}>TF-IDF</option></select></label></div>
+      <div id="metrics-semantic-comparison">${renderSemanticComparison(datos)}</div>
+    </section>
     <div class="metrics-query-analysis">
       <div class="metrics-section-head"><strong>Análisis por consulta</strong><span>${count} consultas disponibles</span></div>
       <div class="metrics-query-selector"><label for="metrics-query-search">Buscar por índice o texto de la consulta</label>
@@ -286,6 +365,10 @@ function renderEvaluation(datos) {
 }
 
 function setupMetricsTabs(root, datos) {
+  root.querySelector("#metrics-grouping")?.addEventListener("change", event => {
+    agrupacionMetricas = event.target.value;
+    root.querySelector("#metrics-group-performance").innerHTML = renderGroupPerformance(datos);
+  });
   root.querySelectorAll(".metrics-tab").forEach(tab => {
     tab.addEventListener("click", () => {
       root.querySelectorAll(".metrics-tab").forEach(item => {
@@ -309,6 +392,19 @@ function setupMetricsTabs(root, datos) {
     suggestions.hidden = true;
     renderQueryDetail(datos, qid, detail);
   };
+  const bindCases = () => root.querySelectorAll("[data-analysis-query]").forEach(button => {
+    button.addEventListener("click", () => {
+      if (!datos.queries[button.dataset.analysisQuery]) return;
+      select(button.dataset.analysisQuery);
+      detail.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+  bindCases();
+  root.querySelector("#metrics-semantic-baseline")?.addEventListener("change", event => {
+    referenciaSemantica = event.target.value;
+    root.querySelector("#metrics-semantic-comparison").innerHTML = renderSemanticComparison(datos);
+    bindCases();
+  });
   const showMatches = () => {
     const term = search.value.trim().toLowerCase();
     const matches = entries.filter(([qid, query]) => !term || qid.toLowerCase().includes(term) || query.text.toLowerCase().includes(term));
@@ -327,7 +423,7 @@ function renderQueryDetail(datos, queryId, container) {
   if (!query) return;
   container.innerHTML = `<div class="metrics-query-summary"><div><span class="metrics-query-id">${escapeHtml(queryId)}</span>
     <p>${escapeHtml(query.text)}</p></div><div class="metrics-query-tags"><p>${escapeHtml(query.length_group)} · ${escapeHtml(query.query_type)} · ${query.token_count} tokens</p></div></div>
-    ${metricsTable(query.metrics, datos.dynamic_cuts)}`;
+    ${metricsTable(query.metrics, datos.dynamic_cuts, false, datos)}`;
 }
 
 function escapeHtml(value) {

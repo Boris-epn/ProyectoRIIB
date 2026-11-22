@@ -70,3 +70,19 @@ no están instaladas. Las pruebas de evaluación usan datos controlados sin desc
 - `requirements.txt`: dependencias de Python.
 
 La caché de embeddings se genera en `.cache/` y no se incluye en Git.
+
+
+## Análisis de los resultados
+
+Métricas incluye MAP por tipo de pregunta y por longitud, con el tamaño de cada
+categoría, los modelos con mayor MAP (incluidos empates) y los tipos donde cada
+modelo alcanza su mayor MAP observado. Las categorías se asignan con reglas
+aproximadas; la comparación es descriptiva y debe interpretarse con su tamaño.
+
+La comparación semántica permite elegir BM25 o TF-IDF. Cuenta consultas donde
+Embeddings mejora, empeora o empata por AP y muestra hasta cinco ejemplos por
+dirección, ordenados por diferencia de AP, con el texto, el tipo de consulta y
+la posición del primer documento relevante. Cada ejemplo abre su análisis por
+consulta. Se usan los mismos qrels y el mismo conjunto de consultas de prueba;
+los resultados semánticos se publican cuando termina la evaluación completa.
+Estos análisis usan AP/MAP sobre el ranking completo y no cambian al elegir k.
