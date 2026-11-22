@@ -307,35 +307,39 @@ class DenseRetriever:
             self.cache_location = path
 
     def _encode_corpus(self, cleaned: list[dict], generation: int, show_progress: bool) -> np.ndarray:
-        texts = [document_text(document) for document in cleaned]
         with self._state_lock:
             if generation != self._generation:
                 raise _Cancelled()
             self.state = "building"
             self.done = 0
-            self.total = len(texts)
+            self.total = len(cleaned)
 
         bar = None
         if show_progress:
             try:
                 from tqdm import tqdm
 
-                bar = tqdm(total=len(texts), unit="doc", desc="Embeddings")
+                bar = tqdm(total=len(cleaned), unit="doc", desc="Embeddings")
             except ImportError:
                 bar = None
 
-        chunks = []
+        embeddings = None
         try:
-            for start in range(0, len(texts), ENCODE_CHUNK):
+            for start in range(0, len(cleaned), ENCODE_CHUNK):
                 with self._state_lock:
                     if generation != self._generation:
                         raise _Cancelled()
-                batch = texts[start:start + ENCODE_CHUNK]
+                batch = [document_text(document) for document in cleaned[start:start + ENCODE_CHUNK]]
                 with self._encode_lock:
                     vectors = _normalize(self.encoder.encode(batch))
                 if vectors.shape[0] != len(batch):
                     raise ValueError("El codificador devolvió un número de vectores incorrecto")
-                chunks.append(vectors)
+                if embeddings is None:
+                    # Una sola matriz: vstack duplicaba todos los vectores al final.
+                    embeddings = np.empty((len(cleaned), vectors.shape[1]), dtype=np.float32)
+                if vectors.shape[1] != embeddings.shape[1]:
+                    raise ValueError("El codificador cambió la dimensión de los vectores")
+                embeddings[start:start + len(batch)] = vectors
                 with self._state_lock:
                     if generation == self._generation:
                         self.done = start + len(batch)
@@ -344,7 +348,7 @@ class DenseRetriever:
         finally:
             if bar is not None:
                 bar.close()
-        return np.ascontiguousarray(np.vstack(chunks), dtype=np.float32)
+        return embeddings
 
     # ------------------------------------------------------------------ caché
     def _read_cache(self, path: Path, fingerprint: str, ids: list[str]) -> np.ndarray | None:

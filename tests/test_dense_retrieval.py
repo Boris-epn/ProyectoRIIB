@@ -170,6 +170,15 @@ class FakeEncoderRetrieverTests(unittest.TestCase):
         self.retriever.build(DOCUMENTS)
         self.assertEqual(len(self.retriever.search("stock", 1)), 1)
 
+    def test_multiple_chunks_preserve_vectors_and_document_order(self):
+        with mock.patch("dense_retrieval.ENCODE_CHUNK", 2):
+            self.retriever.build(DOCUMENTS)
+        vectors = np.load(self.retriever.cache_location / "embeddings.npy")
+        expected = FakeEncoder().encode([document_text(d) for d in DOCUMENTS])
+        expected /= np.linalg.norm(expected, axis=1, keepdims=True)
+        np.testing.assert_allclose(vectors, expected, atol=1e-7)
+        self.assertEqual([len(call) for call in self.encoder.calls], [2, 1])
+
     def test_empty_query_and_not_ready_return_nothing(self):
         self.assertEqual(self.retriever.search("car", 5), [])
         self.retriever.build(DOCUMENTS)
