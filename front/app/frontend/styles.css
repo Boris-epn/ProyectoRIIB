@@ -199,7 +199,7 @@
 .goggle .chip:hover svg { color: var(--accent-ink); }
 .goggle .chip[aria-expanded="true"] svg { transform: rotate(180deg); }
 /* Pulsación inmediata en todo lo pulsable */
-.goggle .chip:active, .goggle .clear:active, .goggle .grow:active, .goggle .example:active, .goggle .opt:active, .goggle .seg button:active, .goggle .more:active { transform: scale(.97); }
+.goggle .chip:active, .goggle .clear:active, .goggle .grow:active, .goggle .example:active, .goggle .opt:active, .goggle .seg button:active { transform: scale(.97); }
 
 /* Barra fina de progreso (stale-while-revalidate) */
 .goggle .progress {
@@ -267,7 +267,7 @@
 .goggle .menu[hidden] { display: block; opacity: 0; transform: scale(.95); pointer-events: none; transition-duration: var(--d-exit); }
 .goggle .cantidad-resultados {
   display: grid;
-  grid-template-columns: 70px minmax(88px, 1fr) 28px;
+  grid-template-columns: 70px minmax(88px, 1fr) 44px;
   align-items: center;
   gap: 8px;
   min-height: 40px;
@@ -281,6 +281,19 @@
 .goggle .cantidad-resultados output {
   text-align: right;
   color: var(--accent-ink);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.goggle .cantidad-numero {
+  width: 44px;
+  height: 28px;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  text-align: center;
   font-size: var(--t-xs);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -374,22 +387,6 @@
   min-height: 28px; margin: 0 0 var(--s3); color: var(--ink-2); font-size: var(--t-sm);
 }
 .goggle .status b { color: var(--ink); font-weight: 600; }
-.goggle .time {
-  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px 0 8px;
-  border-radius: 999px; background: var(--teal-soft); color: var(--teal); font-size: var(--t-xs); font-weight: 500;
-}
-.goggle .time svg { width: 14px; height: 14px; }
-
-/* «Quizás quisiste decir» */
-.goggle .dym { margin: 0 0 var(--s3); color: var(--ink-2); font-size: var(--t-md); }
-.goggle .dym[hidden] { display: none; }
-.goggle .dym button {
-  padding: 0; border: 0; background: none; color: var(--accent-ink); font: inherit; font-style: italic;
-  cursor: pointer; text-decoration: underline; text-decoration-color: transparent; text-underline-offset: 3px;
-  transition: text-decoration-color var(--d-fast) ease-out;
-}
-.goggle .dym button:hover { text-decoration-color: currentColor; }
-.goggle .dym button b { font-weight: 700; }
 .goggle .list { list-style: none; margin: 0; padding: 0; transition: opacity var(--d-fast) ease-out, transform var(--d-fast) ease-out; }
 .goggle .list[data-stale="true"] { opacity: .45; }
 .goggle .list.leaving { opacity: 0; transform: translateX(-8px); }
@@ -402,16 +399,41 @@
 .goggle .row:first-child { border-top: 0; }
 .goggle .row > div { min-width: 0; }  /* la columna de texto puede encogerse */
 .goggle .lead, .goggle .snippet { overflow-wrap: break-word; word-break: normal; }
+.goggle .snippet {
+  margin: 4px 0 0;
+  max-width: 58ch;
+  color: var(--ink-2);
+  line-height: 1.45;
+  font-size: var(--t-sm);
+  text-wrap: pretty;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.goggle .row.open .snippet {
+  display: block;
+  -webkit-line-clamp: unset;
+  white-space: pre-line;
+  animation: reveal var(--d-page) var(--ease-out) both;
+}
 @keyframes row-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 .goggle .rank { min-width: 18px; color: var(--ink-3); font-size: var(--t-sm); text-align: left; }
 .goggle .row[data-top="true"] .rank { color: var(--accent-ink); font-weight: 700; }
 .goggle .lead { margin: 0; font-size: var(--t-lg); font-weight: 600; line-height: 1.35; color: #A9C0D6; text-wrap: balance; }
-.goggle .snippet {
-  margin: 4px 0 0; max-width: 58ch; color: var(--ink-2); line-height: 1.45; font-size: var(--t-sm); text-wrap: pretty;
-  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+.goggle .more {
+  display: block;
+  margin-top: 4px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-ink);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  cursor: pointer;
 }
-.goggle .row.open .snippet { display: block; -webkit-line-clamp: unset; white-space: pre-line; }
-.goggle .row.open .snippet { animation: reveal var(--d-page) var(--ease-out) both; }
+.goggle .more:hover { text-decoration: underline; text-underline-offset: 3px; }
+.goggle .more:active { transform: scale(.97); }
 .goggle .procedencia {
   margin: 0 0 var(--s1);
   display: flex;
@@ -422,21 +444,16 @@
   line-height: 1.35;
   font-variant-numeric: tabular-nums;
 }
+.goggle .relevancia {
+  margin-left: 4px;
+  color: var(--accent-ink);
+  font-weight: 700;
+  white-space: nowrap;
+}
 @keyframes reveal { from { opacity: .55; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 .goggle mark { background: var(--accent-soft); color: var(--accent-ink); border-radius: 3px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
 .goggle .meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4); margin-top: var(--s3); color: var(--ink-3); font-size: var(--t-xs); }
-.goggle .puntuacion {
-  color: var(--ink-2);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
 .goggle .tip-target { border-radius: 4px; cursor: default; }
-.goggle .more {
-  position: relative; margin-left: auto; padding: var(--s1) 0; border: 0; background: transparent;
-  color: var(--accent-ink); font-size: var(--t-xs); font-weight: 600; cursor: pointer;
-}
-.goggle .more::after { content: ""; position: absolute; inset: -10px -8px; }  /* hit slop */
-.goggle .more:hover { text-decoration: underline; text-underline-offset: 3px; }
 
 /* La burbuja se posiciona fuera del flujo y se vincula al control con aria-describedby. */
 .goggle .tooltip {

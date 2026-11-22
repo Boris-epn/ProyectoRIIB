@@ -14,6 +14,17 @@ FRONT_DIR = ROOT / "front"
 
 app = Flask(__name__)
 
+
+@app.after_request
+def disable_front_cache(response):
+    if request.path.startswith("/api/"):
+        return response
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
 TOKEN_PATTERN = re.compile(r"[a-z]+|[0-9]+(?:\.[0-9]+)?")
 FALLBACK_STOPWORDS = {
     "a", "about", "an", "and", "are", "as", "at", "be", "but", "by",
@@ -381,7 +392,7 @@ def search():
     query = str(payload.get("q") or "").strip()
     model = str(payload.get("model") or "jaccard").lower()
     try:
-        k = min(max(int(payload.get("k") or 10), 1), 50)
+        k = min(max(int(payload.get("k") or 10), 1), 100)
     except (TypeError, ValueError):
         k = 10
     seq = int(payload.get("seq") or 0)
@@ -410,7 +421,7 @@ def search():
         "model": model,
         "elapsed_ms": (time.perf_counter() - started) * 1000,
         "terms": engine.tokenize(query),
-        "suggestion": engine.suggestion(query),
+        "suggestion": "",
         "hits": hits,
     })
 
@@ -420,7 +431,7 @@ def compare():
     payload = request.get_json(silent=True) or {}
     query = str(payload.get("q") or "").strip()
     try:
-        k = min(max(int(payload.get("k") or 10), 1), 50)
+        k = min(max(int(payload.get("k") or 10), 1), 100)
     except (TypeError, ValueError):
         k = 10
     if not engine.ready:

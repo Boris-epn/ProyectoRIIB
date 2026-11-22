@@ -18,8 +18,6 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 const decimal = (v) => v.toFixed(2).replace(".", ",");
 const listEs = (items) => items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} y ${items[items.length - 1]}`;
 const reduced = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
-const CLOCK = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 4.8V8l2.2 1.4"/></svg>';
-
 export default function ({ parentElement, data, setStateValue }) {
   const root = parentElement.querySelector(".goggle");
   root._send = setStateValue;
@@ -102,7 +100,6 @@ function mount(root, data) {
   };
   const bar = $(".bar"), input = $("#goggle-q"), clear = $(".clear"), chip = $(".chip"), menu = $("#goggle-menu");
   const cantidad = $("#cantidad-resultados"), cantidadSalida = $("[data-cantidad-output]");
-  const cantidades = [5, 10, 15, 20];
   const sugerenciasControl = $("#goggle-suggest");
   const list = $(".list"), status = $(".status"), tip = $("#goggle-tip");
   const suggest = sugerenciasControl;
@@ -113,7 +110,7 @@ function mount(root, data) {
     pager.hidden = true;
     root.querySelector(".results-main")?.append(pager);
   }
-  const sw = $("[data-stem-row] .switch"), gsw = $("[data-graph-switch]"), ghost = $(".ghost"), dym = $(".dym"), dymBtn = $("[data-dym]");
+  const sw = $("[data-stem-row] .switch"), gsw = $("[data-graph-switch]"), ghost = $(".ghost");
   const grow = $(".grow");
   const send = (name, value) => root._send(name, value);
 
@@ -191,7 +188,7 @@ function mount(root, data) {
     state.seq += 1;
     state.page = 1; state.renderedKey = null;
     send("request", currentRequest());
-    if (!q) { state.hasHits = false; state.renderedKey = null; state.response = null; list.innerHTML = ""; list.dataset.stale = "false"; status.innerHTML = ""; pager.hidden = true; dym.hidden = true; bar.dataset.busy = "false"; showGraph(null); if (isHome()) setMode("home"); return; }
+    if (!q) { state.hasHits = false; state.renderedKey = null; state.response = null; list.innerHTML = ""; list.dataset.stale = "false"; status.innerHTML = ""; pager.hidden = true; bar.dataset.busy = "false"; showGraph(null); if (isHome()) setMode("home"); return; }
     setMode("results");
     bar.dataset.busy = "true";
     graphBox.dataset.stale = "true";
@@ -203,8 +200,7 @@ function mount(root, data) {
   // Diseño de inicio (logo grande): Buscar sin consulta, sea cual sea la ruta. Con /search y la
   // consulta vacía (×, Comparar vaciado, atrás) el modo «results» dejaba la página en blanco.
   const isHome = () => state.view === "buscar" && !state.q.trim();
-  // Acción explícita (Enter, sugerencia, ejemplo, «Quizás quisiste decir»): pasa a /search.
-  // Ese cambio de página vuelve a montar el componente; el aviso devuelve el foco al campo.
+  // Acción explícita (Enter, sugerencia o ejemplo): pasa a /search.
   const commitSearch = () => {
     if (state.route !== "search" && state.q.trim()) { state.route = "search"; window.__goggleRefocus = true; }
     searchNow();
@@ -244,15 +240,23 @@ function mount(root, data) {
     if (model === "jaccard") return `${value}: el ${(h.score * 100).toLocaleString("es", { maximumFractionDigits: 0 })} % de las palabras distintas de consulta y documento son comunes.${sought}`;
     return `${value}: cuánto se parece el significado de tu consulta al de este documento, de −1 a 1 (similitud coseno entre sus vectores de significado). Más alto, más parecido; no es un porcentaje de relevancia.`;
   }
-  function formatMs(ms) {
-    if (ms < 1) return "menos de 1 ms";
-    if (ms < 1000) return `${Math.round(ms)} ms`;
-    return `${(ms / 1000).toFixed(1).replace(".", ",")} s`;
+  function relevancePercent(r, hit) {
+    let value;
+    if (r.model === "bm25") {
+      const topScore = r.hits[0]?.score || 0;
+      value = topScore > 0 ? hit.score / topScore * 100 : 0;
+    } else if (r.model === "jaccard" || r.model === "tfidf") {
+      value = hit.score * 100;
+    } else {
+      value = (hit.score + 1) * 50;
+    }
+    value = Math.min(100, Math.max(0, value));
+    return `${value.toFixed(1).replace(".", ",")} %`;
   }
   function renderStatus(r, count) {
     const n = r.hits.length;
     const shown = `Mostrando <b>${count}</b> ${count === 1 ? "resultado" : "resultados"} de <b>${n}</b>`;
-    status.innerHTML = `<span>${shown}</span><span class="time">${CLOCK}${formatMs(r.elapsed_ms)}</span>`;
+    status.innerHTML = `<span>${shown}</span>`;
   }
   function renderPage(r) {
     closeTip();
@@ -263,9 +267,9 @@ function mount(root, data) {
       const { lead, rest, leadAt, restAt } = split(h.text);
       return `<li class="row" style="--i:${i}" data-rank="${h.rank}" ${h.rank === 1 ? 'data-top="true"' : ""}>
         <div>
-          <p class="procedencia"><span class="rank num">${h.rank}</span><span>Doc. ${esc(h.doc_id)}</span><span class="puntuacion">${h.score.toFixed(2)}</span></p>
+          <p class="procedencia"><span class="rank num">${h.rank}</span><span>Doc. ${esc(h.doc_id)}</span><span class="relevancia" title="Porcentaje de relevancia según el modelo">${relevancePercent(r, h)}</span></p>
           <p class="lead" lang="en">${marked(lead, h.spans, leadAt)}</p>
-          ${rest ? `<p class="snippet" lang="en">${marked(rest, h.spans, restAt)}</p>` : ""}
+          ${rest ? `<p class="snippet" lang="en">${marked(rest, h.spans, restAt)}</p><button class="more" type="button" aria-expanded="false">Ver más</button>` : ""}
         </div>
       </li>`;
     }).join("");
@@ -273,24 +277,11 @@ function mount(root, data) {
     pager.innerHTML = "";
     drawGraph();
   }
-  // «Quizás quisiste decir»: las palabras corregidas van en negrita.
-  function renderSuggestion(r) {
-    const fixed = r.suggestion, typedQ = state.q.trim();
-    dym.hidden = !fixed || fixed.toLowerCase() === typedQ.toLowerCase();
-    if (dym.hidden) return;
-    const before = typedQ.split(/([A-Za-z]+)/), after = fixed.split(/([A-Za-z]+)/);
-    dymBtn.innerHTML = after.map((part, i) => part !== before[i] ? `<b>${esc(part)}</b>` : esc(part)).join("");
-    dymBtn.dataset.q = fixed;
-  }
-  on(dymBtn, "click", () => {
-    editInput(dymBtn.dataset.q || ""); syncClear(); hideSuggest(); commitSearch(); input.focus();
-  });
   function render(r) {
     clearTimeout(state.pageTimer);
     list.classList.remove("leaving"); closeTip();
     bar.dataset.busy = "false"; list.dataset.stale = "false";
     state.response = r;
-    renderSuggestion(r);
     showGraph(r);
     if (r.error) { state.hasHits = false; status.innerHTML = ""; pager.hidden = true; list.innerHTML = `<li class="empty"><p>${esc(r.error)}</p></li>`; return; }
     const modelo = MODELOS.find((m) => m.id === r.model), name = modelo?.name || r.model;
@@ -314,8 +305,11 @@ function mount(root, data) {
   on(list, "click", (e) => {
     const more = e.target.closest(".more");
     if (more) {
-      const row = more.closest(".row"), open = row.classList.toggle("open");
-      more.textContent = open ? "Mostrar menos" : "Leer todo"; more.setAttribute("aria-expanded", open);
+      const row = more.closest(".row");
+      const open = row.classList.toggle("open");
+      more.textContent = open ? "Ver menos" : "Ver más";
+      more.setAttribute("aria-expanded", String(open));
+      return;
     }
     if (e.target.closest("[data-try-dense]")) setModel("dense");
   });
@@ -945,7 +939,7 @@ function mount(root, data) {
     root.querySelector("[data-model-name]").textContent = compare ? "Ajustes" : MODELOS.find((m) => m.id === state.model)?.name || "BM25";
     menu.querySelectorAll("[data-model]").forEach((b) => b.setAttribute("aria-checked", b.dataset.model === state.model));
     if (cantidad) {
-      cantidad.value = String(cantidades.indexOf(state.k));
+      cantidad.value = String(state.k);
       if (cantidadSalida) cantidadSalida.value = String(state.k);
     }
     const dense = state.model === "dense" && !compare;
@@ -965,16 +959,28 @@ function mount(root, data) {
   on(cantidad, "pointerdown", (e) => e.stopPropagation());
   on(cantidad, "pointermove", (e) => e.stopPropagation());
   on(cantidad, "input", () => {
-    const indice = Number(cantidad.value);
-    const cantidadSeleccionada = cantidades[indice] ?? 10;
+    const cantidadSeleccionada = Math.min(100, Math.max(1, Number(cantidad.value) || 1));
     if (cantidadSalida) cantidadSalida.value = String(cantidadSeleccionada);
   });
   on(cantidad, "change", () => {
-    const indice = Number(cantidad.value);
-    state.k = cantidades[indice] ?? 10;
+    state.k = Math.min(100, Math.max(1, Number(cantidad.value) || 1));
+    cantidad.value = String(state.k);
     if (cantidadSalida) cantidadSalida.value = String(state.k);
     if (state.q.trim()) rerun();
   });
+  if (cantidadSalida) {
+    on(cantidadSalida, "pointerdown", (e) => e.stopPropagation());
+    on(cantidadSalida, "input", () => {
+      const cantidadSeleccionada = Math.min(100, Math.max(1, Number(cantidadSalida.value) || 1));
+      if (Number(cantidadSalida.value)) cantidad.value = String(cantidadSeleccionada);
+    });
+    on(cantidadSalida, "change", () => {
+      state.k = Math.min(100, Math.max(1, Number(cantidadSalida.value) || 1));
+      cantidadSalida.value = String(state.k);
+      cantidad.value = String(state.k);
+      if (state.q.trim()) rerun();
+    });
+  }
   on(menu, "click", (e) => {
     const m = e.target.closest("[data-model]"); if (m) { setModel(m.dataset.model); openMenu(false); input.focus(); }
     const toggle = e.target.closest(".switch");
@@ -1047,7 +1053,7 @@ function mount(root, data) {
     root.dataset.query = state.q.trim() ? "on" : "off"; state.searchedKey = searchKey();
     setMode(isHome() ? "home" : "results");
     if (state.q.trim()) { bar.dataset.busy = "true"; renderSkeleton(); }
-    else { list.innerHTML = ""; status.innerHTML = ""; pager.hidden = true; dym.hidden = true; showGraph(null); shuffleExamples(); }
+    else { list.innerHTML = ""; status.innerHTML = ""; pager.hidden = true; showGraph(null); shuffleExamples(); }
   }
 
   // ---------- Estado inicial (también tras volver a montar) ----------

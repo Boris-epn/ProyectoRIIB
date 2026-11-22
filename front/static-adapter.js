@@ -94,8 +94,7 @@ async function mostrarExtras(vista) {
                   <div class="static-document">
                     <b>${hit.rank}</b>
                     <div><strong>Documento ${escapeHtml(hit.doc_id)}</strong>
-                    <p>${escapeHtml(hit.text.slice(0, 180))}${hit.text.length > 180 ? "…" : ""}</p>
-                    <small>${hit.score.toFixed(4)}</small></div>
+                    <p>${escapeHtml(hit.text.slice(0, 180))}${hit.text.length > 180 ? "…" : ""}</p></div>
                   </div>`).join("") || "<div class=\"static-document\"><p>Sin resultados</p></div>"}
               </article>`).join("")}
           </div>
@@ -176,7 +175,7 @@ async function importarCorpusInicial() {
 }
 
 async function iniciar() {
-  const respuesta = await fetch("app/frontend/app.js");
+  const respuesta = await fetch(`app/frontend/app.js?v=${Date.now()}`);
   let codigoFuente = await respuesta.text();
   codigoFuente = codigoFuente.replace("__SUGGESTIONS__", JSON.stringify(sugerencias));
   codigoFuente = codigoFuente.replace("__VOCABULARY__", JSON.stringify(vocabulario));

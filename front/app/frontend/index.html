@@ -54,8 +54,8 @@
       <div class="menu" id="goggle-menu" role="menu" aria-label="Modelo y ajustes" hidden>
         <div class="cantidad-resultados">
           <span class="cantidad-etiqueta">Resultados</span>
-          <input id="cantidad-resultados" type="range" min="0" max="3" step="1" value="1" aria-label="Número de resultados">
-          <output data-cantidad-output for="cantidad-resultados">10</output>
+          <input id="cantidad-resultados" type="range" min="1" max="100" step="1" value="10" aria-label="Número de resultados">
+          <input class="cantidad-numero" type="number" min="1" max="100" value="10" data-cantidad-output aria-label="Cantidad exacta de resultados">
         </div>
         <p class="menu-label">Modelo</p>
         <div role="group" data-models></div>
@@ -64,7 +64,6 @@
 
     <section class="results" aria-label="Resultados">
       <div class="results-main">
-        <p class="dym" hidden>Quizás quisiste decir: <button type="button" data-dym></button></p>
         <p class="status num" role="status" aria-live="polite"></p>
         <ol class="list"></ol>
       </div>
@@ -97,4 +96,4 @@
     </section>
   </div>
   <div id="goggle-tip" class="tooltip" role="tooltip" hidden></div>
-</div>
+  </div>
