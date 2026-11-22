@@ -114,7 +114,7 @@
 
 /* Resultados: logo pequeño a la izquierda de la barra, alineado con su primera línea */
 .goggle .results-head {
-  display: grid; grid-template-columns: auto 1fr; align-items: start; gap: var(--s5);
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: var(--s5);
   padding-top: var(--s2);
 }
 .goggle .results-head .logo { display: flex; align-items: center; height: var(--bar-h); }
@@ -387,6 +387,17 @@
   min-height: 28px; margin: 0 0 var(--s3); color: var(--ink-2); font-size: var(--t-sm);
 }
 .goggle .status b { color: var(--ink); font-weight: 600; }
+.goggle .compare-status {
+  border: 0;
+  background: transparent;
+  color: var(--accent-ink);
+  padding: 2px 0;
+  margin-left: auto;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
 .goggle .list { list-style: none; margin: 0; padding: 0; transition: opacity var(--d-fast) ease-out, transform var(--d-fast) ease-out; }
 .goggle .list[data-stale="true"] { opacity: .45; }
 .goggle .list.leaving { opacity: 0; transform: translateX(-8px); }
@@ -559,7 +570,7 @@
 /* Comparar usa el mismo ancho que sus columnas; la cabecera conserva el ancho y la
    posición centrada de Buscar, así la barra no salta al cambiar de vista. */
 .goggle[data-view="comparar"] .goggle-main { width: min(1120px, 100% - 2 * var(--s4)); }
-.goggle[data-view="comparar"] .results-head { max-width: 720px; margin-inline: auto; }
+.goggle[data-view="comparar"] .results-head { max-width: none; margin-inline: auto; }
 /* Comparar sin consulta: los mismos ejemplos del inicio, centrados bajo la barra. */
 .goggle .cmp-start { display: none; }
 .goggle[data-view="comparar"][data-query="off"] .cmp-start {
@@ -581,7 +592,7 @@
   .goggle .top { padding: 0 var(--s4); height: 56px; }
   .goggle .home { padding-top: 56px; gap: var(--s5); }
   .goggle .logo svg { height: 64px; }
-  .goggle .results-head { grid-template-columns: 1fr; gap: var(--s3); }
+  .goggle .results-head { grid-template-columns: 1fr auto; gap: var(--s3); }
   .goggle .results-head .logo { height: auto; }
   .goggle[data-view="comparar"][data-query="off"] .cmp-start { grid-column: auto; padding-top: var(--s1); }
   .goggle .examples { flex-wrap: wrap; gap: var(--s3) var(--s2); }

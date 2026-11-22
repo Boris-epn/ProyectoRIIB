@@ -62,7 +62,13 @@ async function establecerSolicitud(solicitud) {
 
 async function mostrarExtras(vista) {
   const extras = document.querySelector("#demo-extras");
+  const root = document.querySelector(".goggle");
+  const results = root?.querySelector(".results");
+  const main = root?.querySelector(".goggle-main");
   if (vista === "comparar") {
+    if (root) root.dataset.view = "comparar";
+    if (results) results.style.display = "none";
+    if (main && !main.contains(extras)) main.append(extras);
     extras.innerHTML = `<section class="static-view"><p>Cargando comparacion...</p></section>`;
     if (!estado.q.trim()) {
       extras.innerHTML = "";
@@ -83,22 +89,62 @@ async function mostrarExtras(vista) {
       extras.innerHTML = `
         <section class="static-view static-compare" aria-label="Comparacion">
           <div class="static-controls">
-            <strong>Top ${estado.k}</strong>
-            <div><button class="static-selected" type="button">Todos</button></div>
+            <strong>Comparación Top ${datos.k}</strong>
+            <p>Referencias: Top ${datos.k} de BM25</p>
+            <button type="button" class="compare-back">Regresar a resultados</button>
           </div>
-          <div class="static-columns">
+          <div class="static-compare-columns">
             ${Object.entries(datos.results).map(([modelo, hits]) => `
-              <article class="static-column">
-                <header><strong>${nombres[modelo]}</strong><span>${hits.length} resultados</span></header>
+              <section class="static-column">
+                <header class="static-column-header">
+                  <div>
+                    <strong>${nombres[modelo]}</strong>
+                  </div>
+                  <div class="static-header-metrics">
+                    <span><small>Precision@${datos.k}</small><b>${datos.metrics[modelo].precision.toFixed(4)}</b></span>
+                    <span><small>Recall@${datos.k}</small><b>${datos.metrics[modelo].recall.toFixed(4)}</b></span>
+                  </div>
+                </header>
                 ${hits.map((hit) => `
-                  <div class="static-document">
-                    <b>${hit.rank}</b>
-                    <div><strong>Documento ${escapeHtml(hit.doc_id)}</strong>
-                    <p>${escapeHtml(hit.text.slice(0, 180))}${hit.text.length > 180 ? "…" : ""}</p></div>
-                  </div>`).join("") || "<div class=\"static-document\"><p>Sin resultados</p></div>"}
-              </article>`).join("")}
+                  <article class="static-document goggle">
+                    <div class="row static-row">
+                      <div>
+                        <p class="procedencia">
+                          <span class="rank num">${hit.rank}</span>
+                          <span>Doc. ${escapeHtml(hit.doc_id)}</span>
+                          <span class="relevancia">${comparisonScore(modelo, hit)}</span>
+                        </p>
+                        <p class="lead static-lead">${escapeHtml(hit.text.slice(0, 110))}${hit.text.length > 110 ? "…" : ""}</p>
+                        ${hit.text.length > 110 ? `<p class="snippet static-snippet">${escapeHtml(hit.text.slice(110, 220))}${hit.text.length > 220 ? "…" : ""}</p>` : ""}
+                        ${hit.text.length > 110 ? `<button class="more static-more" type="button" data-full="${escapeHtml(hit.text)}" aria-haspopup="dialog">Ver más</button>` : ""}
+                      </div>
+                    </div>
+                  </article>`).join("") || "<div class=\"static-document\"><p>Sin resultados</p></div>"}
+              </section>`).join("")}
           </div>
-        </section>`;
+        </section>
+        <dialog class="document-dialog" aria-labelledby="document-dialog-title">
+          <div class="document-dialog-head">
+            <strong id="document-dialog-title">Documento completo</strong>
+            <button type="button" class="document-dialog-close" aria-label="Cerrar"><span aria-hidden="true">×</span></button>
+          </div>
+          <p class="document-dialog-text"></p>
+        </dialog>`;
+      extras.querySelectorAll(".static-more").forEach((button) => {
+        button.addEventListener("click", () => {
+          const dialog = extras.querySelector(".document-dialog");
+          const text = button.dataset.full || "";
+          dialog.querySelector(".document-dialog-text").textContent = text;
+          if (typeof dialog.showModal === "function") dialog.showModal();
+          else dialog.setAttribute("open", "");
+        });
+      });
+      extras.querySelector(".document-dialog-close")?.addEventListener("click", () => {
+        extras.querySelector(".document-dialog")?.close();
+      });
+      extras.querySelector(".compare-back")?.addEventListener("click", () => {
+        document.dispatchEvent(new CustomEvent("goggle:compare"));
+      });
     } catch (error) {
       extras.innerHTML = `<section class="static-view"><p>No se pudo comparar: ${escapeHtml(error.message)}</p></section>`;
     }
@@ -125,6 +171,8 @@ async function mostrarExtras(vista) {
       extras.innerHTML = `<section class="static-view"><p>No se pudieron cargar las métricas.</p></section>`;
     }
   } else {
+    if (root) root.dataset.view = "buscar";
+    if (results) results.style.removeProperty("display");
     extras.innerHTML = "";
   }
 }
@@ -137,6 +185,11 @@ function escapeHtml(value) {
     '"': "&quot;",
     "'": "&#39;",
   })[character]);
+}
+
+function comparisonScore(model, hit) {
+  if (model === "bm25") return hit.score.toFixed(2);
+  return `${(hit.score * 100).toFixed(1).replace(".", ",")} %`;
 }
 
 async function importarArchivo(event) {
@@ -205,6 +258,21 @@ async function iniciar() {
 
   const root = document.querySelector(".goggle");
   recibir = root?._goggle?.receive;
+
+  document.addEventListener("goggle:compare", () => {
+    const volver = estado.view === "comparar";
+    estado.view = volver ? "buscar" : "comparar";
+    const root = document.querySelector(".goggle");
+    const results = root?.querySelector(".results");
+    root?.setAttribute("data-view", estado.view);
+    if (estado.view === "comparar") {
+      if (results) results.style.display = "none";
+    } else if (results) {
+      results.style.removeProperty("display");
+    }
+    estado.seq += 1;
+    establecerSolicitud({ ...estado, view: estado.view });
+  });
   document.querySelectorAll("[data-view-link]").forEach((link) => {
     link.addEventListener("click", () => {
       const view = link.dataset.viewLink;

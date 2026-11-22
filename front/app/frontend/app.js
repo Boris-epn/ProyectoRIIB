@@ -6,7 +6,6 @@ const MODELOS = [
   { id: "jaccard", name: "Jaccard", hint: "Palabras en común", tip: "Compara los conjuntos de palabras distintas; 1 significa que coinciden por completo." },
   { id: "tfidf", name: "TF-IDF", hint: "Palabras ponderadas por rareza", tip: "Compara palabras y da más peso a las menos frecuentes en FiQA." },
   { id: "bm25", name: "BM25", hint: "Ponderadas y ajustadas por longitud", tip: "Suma aportes de palabras y ajusta repeticiones y largo del documento." },
-  { id: "dense", name: "Embeddings", hint: "Por significado, no por palabras", tip: "Convierte la consulta y cada documento en un vector que resume su significado: encuentra textos parecidos aunque usen otras palabras." },
 ];
 const ESPERA_BUSQUEDA = 220;
 const ESPERA_COMPARACION = 450;
@@ -258,7 +257,7 @@ function mount(root, data) {
   function renderStatus(r, count) {
     const n = r.hits.length;
     const shown = `Mostrando <b>${count}</b> ${count === 1 ? "resultado" : "resultados"} de <b>${n}</b>`;
-    status.innerHTML = `<span>${shown}</span>`;
+    status.innerHTML = `<span>${shown}</span><button type="button" class="compare-status">Comparar modelos</button>`;
   }
   function renderPage(r) {
     closeTip();
@@ -314,6 +313,11 @@ function mount(root, data) {
       return;
     }
     if (e.target.closest("[data-try-dense]")) setModel("dense");
+  });
+  on(status, "click", (e) => {
+    if (!e.target.closest(".compare-status")) return;
+    e.preventDefault();
+    document.dispatchEvent(new CustomEvent("goggle:compare"));
   });
   on(pager, "click", (e) => {
     const button = e.target.closest("[data-page]");

@@ -455,12 +455,30 @@ def compare():
             "loading": engine.loading,
             "results": {},
         })
+    results = {
+        model: engine.search(query, model, k)
+        for model in ("jaccard", "tfidf", "bm25")
+    }
+    relevant_ids = {
+        hit["doc_id"]
+        for hit in results["bm25"][:k]
+    }
+    metrics = {}
+    for model, hits in results.items():
+        retrieved_ids = [hit["doc_id"] for hit in hits[:k]]
+        relevant_retrieved = len(set(retrieved_ids).intersection(relevant_ids))
+        precision = relevant_retrieved / k
+        recall = relevant_retrieved / len(relevant_ids) if relevant_ids else 0.0
+        metrics[model] = {
+            "precision": round(precision, 4),
+            "recall": round(recall, 4),
+        }
     return jsonify({
         "query": query,
-        "results": {
-            model: engine.search(query, model, k)
-            for model in ("jaccard", "tfidf", "bm25")
-        },
+        "k": k,
+        "reference": "bm25",
+        "results": results,
+        "metrics": metrics,
     })
 
 
