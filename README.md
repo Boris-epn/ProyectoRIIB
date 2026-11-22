@@ -86,3 +86,13 @@ la posición del primer documento relevante. Cada ejemplo abre su análisis por
 consulta. Se usan los mismos qrels y el mismo conjunto de consultas de prueba;
 los resultados semánticos se publican cuando termina la evaluación completa.
 Estos análisis usan AP/MAP sobre el ranking completo y no cambian al elegir k.
+
+## Desplegar en Railway
+
+Seguir [la guía de Railway](docs/railway.md). El servicio usa el Dockerfile y
+`railway.json`, escucha el puerto asignado por Railway y comprueba `/healthz`.
+No necesita que el PC esté encendido ni Docker Desktop instalado localmente.
+
+La prueba tiene crédito y RAM limitados; comprobar el consumo real con el
+corpus completo. El índice de frecuencias se comparte entre Jaccard, TF-IDF y
+BM25, y los embeddings se generan en lotes pequeños para reducir memoria.

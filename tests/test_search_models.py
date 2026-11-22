@@ -1,3 +1,4 @@
+import math
 import unittest
 
 from server import SearchEngine
@@ -45,6 +46,27 @@ class JaccardAndTfidfTests(unittest.TestCase):
         self.assertIn("d1", scores)
         self.assertIn("d2", scores)
         self.assertGreater(scores["d2"], scores["d1"])
+
+    def test_tfidf_rankings_match_manual_frequency_vectors(self):
+        engine = SearchEngine()
+        engine.import_documents([
+            {"_id": "d1", "text": "credit credit"},
+            {"_id": "d2", "text": "credit loan loan"},
+            {"_id": "d3", "text": "loan"},
+        ], "manual")
+        # Ambos términos tienen el mismo IDF; el coseno coincide con TF.
+        for query, expected in (
+            ("credit loan", {"d1": 1 / math.sqrt(2), "d2": 3 / math.sqrt(10), "d3": 1 / math.sqrt(2)}),
+            ("credit credit loan", {"d1": 2 / math.sqrt(5), "d2": .8, "d3": 1 / math.sqrt(5)}),
+        ):
+            with self.subTest(query=query):
+                ranking = engine.ranking_tfidf(query, 3)
+                for doc_id, score in ranking:
+                    self.assertAlmostEqual(score, expected[doc_id], places=12)
+                hits = engine.search_tfidf(query, 2)
+                self.assertEqual([hit["doc_id"] for hit in hits], [doc_id for doc_id, _ in ranking[:2]])
+                for hit in hits:
+                    self.assertAlmostEqual(hit["score"], expected[hit["doc_id"]], places=6)
 
     def test_empty_and_unknown_query(self):
         self.assertEqual(self.engine.search_jaccard("the and", 10), [])

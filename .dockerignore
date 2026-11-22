@@ -1,0 +1,10 @@
+**
+!Dockerfile
+!requirements.txt
+!requirements-docker.txt
+!gunicorn.conf.py
+!server.py
+!dense_retrieval.py
+!evaluation_analysis.py
+!front/
+!front/**

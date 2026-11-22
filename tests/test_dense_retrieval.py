@@ -244,6 +244,12 @@ class ServerConfigurationTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"DENSE_BUILD_IF_MISSING": "1"}):
             self.assertTrue(SearchEngine().dense.build_if_missing)
 
+    def test_dense_batch_size_can_limit_inference_memory(self):
+        with mock.patch.dict(os.environ, {"DENSE_BATCH_SIZE": "8"}):
+            self.assertEqual(SearchEngine().dense.encoder.batch_size, 8)
+        with mock.patch.dict(os.environ, {"DENSE_BATCH_SIZE": "invalid"}):
+            self.assertEqual(SearchEngine().dense.encoder.batch_size, 64)
+
     def test_server_does_not_import_heavy_libraries(self):
         code = (
             "import sys, server; server.SearchEngine(); "

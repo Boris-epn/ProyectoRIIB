@@ -8,6 +8,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
+from werkzeug.exceptions import NotFound
 
 from dense_retrieval import DenseRetriever
 from evaluation_analysis import build_evaluation_analysis
@@ -24,6 +25,14 @@ def env_flag(name: str, default: bool) -> bool:
     if not value:
         return default
     return value not in {"0", "false", "no", "off"}
+
+
+def env_positive_int(name: str, default: int) -> int:
+    try:
+        value = int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
 
 
 def format_count(value: int) -> str:
@@ -64,9 +73,7 @@ except (ImportError, LookupError):
 class SearchEngine:
     def __init__(self) -> None:
         self.documents: list[dict] = []
-        self.jaccard_index: dict[str, set[str]] = defaultdict(set)
         self.document_sizes: Counter = Counter()
-        self.tfidf_index: dict[str, dict[str, float]] = defaultdict(dict)
         self.tfidf_idf: dict[str, float] = {}
         self.tfidf_norms: dict[str, float] = {}
         self.bm25_frequencies: dict[str, dict[str, int]] = defaultdict(dict)
@@ -92,6 +99,7 @@ class SearchEngine:
         self.dense_evaluation_error = ""
         self.dense_evaluation_profiles: dict = {}
         self.dense = DenseRetriever(
+            batch_size=env_positive_int("DENSE_BATCH_SIZE", 64),
             build_if_missing=env_flag("DENSE_BUILD_IF_MISSING", True),
         )
 
@@ -132,30 +140,18 @@ class SearchEngine:
                 text = str(document.get("text") or document.get("content") or "")
                 cleaned.append({"_id": doc_id, "title": title, "text": text})
 
-            jaccard_index = defaultdict(set)
-            document_sizes = Counter()
-            tfidf_frequencies = defaultdict(dict)
+            # Un solo índice de frecuencias sirve a los tres modelos léxicos.
+            # Jaccard usa sus claves y TF-IDF calcula f(t,d)*IDF al consultar.
             bm25_frequencies = defaultdict(dict)
+            document_sizes = Counter()
             document_lengths = {}
-
             for document in cleaned:
                 doc_id = document["_id"]
-                text_tokens = self.tokenize(document["text"])
-                for term in set(text_tokens):
-                    jaccard_index[term].add(doc_id)
-                document_sizes[doc_id] = len(set(text_tokens))
-                for term, frequency in Counter(text_tokens).items():
-                    tfidf_frequencies[term][doc_id] = frequency
-
-            bm25_tokens_by_document = {
-                document["_id"]: self.tokenize(document["text"])
-                for document in cleaned
-            }
-            bm25_frequencies = defaultdict(dict)
-            document_lengths = {}
-            for doc_id, tokens in bm25_tokens_by_document.items():
+                tokens = self.tokenize(document["text"])
+                counts = Counter(tokens)
                 document_lengths[doc_id] = len(tokens)
-                for term, frequency in Counter(tokens).items():
+                document_sizes[doc_id] = len(counts)
+                for term, frequency in counts.items():
                     bm25_frequencies[term][doc_id] = frequency
 
             document_count = len(cleaned)
@@ -170,16 +166,14 @@ class SearchEngine:
                     (document_count - df + 0.5) / (df + 0.5)
                 )
 
-            tfidf_index = defaultdict(dict)
             tfidf_idf = {}
             tfidf_norms = defaultdict(float)
-            for term, document_frequencies in tfidf_frequencies.items():
+            for term, document_frequencies in bm25_frequencies.items():
                 tfidf_idf[term] = math.log(
                     (document_count + 1) / (len(document_frequencies) + 1)
                 ) + 1
                 for doc_id, frequency in document_frequencies.items():
                     weight = frequency * tfidf_idf[term]
-                    tfidf_index[term][doc_id] = weight
                     tfidf_norms[doc_id] += weight * weight
 
             tfidf_norms = {
@@ -190,9 +184,7 @@ class SearchEngine:
 
             with self.lock:
                 self.documents = cleaned
-                self.jaccard_index = jaccard_index
                 self.document_sizes = document_sizes
-                self.tfidf_index = tfidf_index
                 self.tfidf_idf = tfidf_idf
                 self.tfidf_norms = tfidf_norms
                 self.bm25_frequencies = bm25_frequencies
@@ -236,7 +228,7 @@ class SearchEngine:
         query_terms = set(self.tokenize(query))
         intersections = Counter()
         for term in query_terms:
-            intersections.update(self.jaccard_index.get(term, ()))
+            intersections.update(self.bm25_frequencies.get(term, {}).keys())
 
         results = []
         for doc_id, intersection in intersections.items():
@@ -260,7 +252,8 @@ class SearchEngine:
         query_norm = math.sqrt(sum(weight * weight for weight in query_weights.values()))
         products = defaultdict(float)
         for term, query_weight in query_weights.items():
-            for doc_id, document_weight in self.tfidf_index[term].items():
+            for doc_id, frequency in self.bm25_frequencies[term].items():
+                document_weight = frequency * self.tfidf_idf[term]
                 products[doc_id] += query_weight * document_weight
 
         results = []
@@ -320,7 +313,7 @@ class SearchEngine:
         query_terms = set(self.tokenize(query))
         intersections = Counter()
         for term in query_terms:
-            intersections.update(self.jaccard_index.get(term, ()))
+            intersections.update(self.bm25_frequencies.get(term, {}).keys())
         results = []
         for doc_id, intersection in intersections.items():
             document_size = self.document_sizes[doc_id]
@@ -341,7 +334,8 @@ class SearchEngine:
         query_norm = math.sqrt(sum(weight * weight for weight in query_weights.values()))
         products = defaultdict(float)
         for term, query_weight in query_weights.items():
-            for doc_id, document_weight in self.tfidf_index[term].items():
+            for doc_id, frequency in self.bm25_frequencies[term].items():
+                document_weight = frequency * self.tfidf_idf[term]
                 products[doc_id] += query_weight * document_weight
         results = []
         for doc_id, product in products.items():
@@ -689,15 +683,20 @@ def index():
     return send_from_directory(FRONT_DIR, "index.html")
 
 
+@app.route("/healthz")
+def health():
+    # La disponibilidad HTTP no depende de haber importado el corpus.
+    return jsonify({"status": "ok"})
+
+
 @app.route("/<path:path>")
 def static_files(path):
-    target = ROOT / path
-    if target.is_file():
-        return send_from_directory(ROOT, path)
-    target = FRONT_DIR / path
-    if target.is_file():
-        return send_from_directory(FRONT_DIR, path)
-    return jsonify({"error": "Archivo no encontrado"}), 404
+    # Solo publicar recursos del frontend, nunca código, cachés o configuración.
+    relative = path.removeprefix("front/")
+    try:
+        return send_from_directory(FRONT_DIR, relative)
+    except NotFound:
+        return jsonify({"error": "Archivo no encontrado"}), 404
 
 
 @app.route("/api/corpus/status")

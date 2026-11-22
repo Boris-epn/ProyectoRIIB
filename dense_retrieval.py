@@ -361,7 +361,7 @@ class DenseRetriever:
                 return None
             if json.loads((path / "ids.json").read_text(encoding="utf-8")) != ids:
                 return None
-            embeddings = np.load(path / "embeddings.npy", allow_pickle=False)
+            embeddings = np.load(path / "embeddings.npy", allow_pickle=False, mmap_mode="r")
         except (OSError, ValueError, EOFError):
             return None
         if embeddings.dtype != np.float32 or embeddings.ndim != 2 or embeddings.shape[0] != len(ids):
