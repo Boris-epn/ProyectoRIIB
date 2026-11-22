@@ -50,6 +50,37 @@ class JaccardAndTfidfTests(unittest.TestCase):
         self.assertEqual(self.engine.search_jaccard("the and", 10), [])
         self.assertEqual(self.engine.search_tfidf("xyzabc", 10), [])
 
+    def test_bm25_notebook_example(self):
+        engine = SearchEngine()
+        engine.import_documents(
+            [
+                {"_id": "D1", "title": "", "text": "datos datos ciencia"},
+                {"_id": "D2", "title": "", "text": "datos ciencia modelos aprendizaje"},
+                {"_id": "D3", "title": "", "text": "ciencia modelos"},
+            ],
+            "bm25-test",
+        )
+
+        self.assertEqual(
+            engine.document_lengths,
+            {"D1": 3, "D2": 4, "D3": 2},
+        )
+        self.assertEqual(engine.average_document_length, 3)
+        self.assertAlmostEqual(engine.bm25_idf["datos"], 0.4700, places=4)
+        self.assertAlmostEqual(engine.bm25_idf["ciencia"], 0.13353139262452257, places=4)
+
+        results = engine.search_bm25("datos ciencia", 10)
+        ranking = [(hit["doc_id"], round(hit["score"], 4)) for hit in results]
+        self.assertEqual(
+            ranking,
+            [("D1", 0.7798), ("D2", 0.5311), ("D3", 0.1546)],
+        )
+        self.assertEqual(
+            engine.search_bm25("datos ciencia datos", 10),
+            results,
+        )
+        self.assertEqual(engine.search_bm25("hipoteca", 10), [])
+
 
 if __name__ == "__main__":
     unittest.main()

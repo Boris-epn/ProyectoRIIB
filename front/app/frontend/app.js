@@ -233,18 +233,20 @@ function mount(root, data) {
     return parts.join("");
   }
   function scoreTip(model, h, terms) {
-    const value = decimal(h.score);
     const sought = terms.length ? ` Se buscó: ${terms.join(", ")}.` : " No quedaron términos tras el preprocesamiento.";
-    if (model === "bm25") return `${value}: suma de lo que aportan ${listEs(terms) || "los términos"} en este documento. No tiene tope; solo sirve para comparar resultados de esta misma búsqueda.${sought}`;
+    if (model === "bm25") {
+      const value = h.score.toFixed(2).replace(".", ".");
+      return `${value}: sum of what "${state.q.trim()}" contributes in this document. It has no cap; it is only useful for comparing results from this same search. Searched for: ${state.q.trim()}`;
+    }
+    const value = decimal(h.score);
     if (model === "tfidf") return `${value}: coseno entre consulta y documento, de 0 a 1. Las palabras raras en la colección pesan más.${sought}`;
     if (model === "jaccard") return `${value}: el ${(h.score * 100).toLocaleString("es", { maximumFractionDigits: 0 })} % de las palabras distintas de consulta y documento son comunes.${sought}`;
     return `${value}: cuánto se parece el significado de tu consulta al de este documento, de −1 a 1 (similitud coseno entre sus vectores de significado). Más alto, más parecido; no es un porcentaje de relevancia.`;
   }
-  function relevancePercent(r, hit) {
+  function relevanceLabel(r, hit) {
     let value;
     if (r.model === "bm25") {
-      const topScore = r.hits[0]?.score || 0;
-      value = topScore > 0 ? hit.score / topScore * 100 : 0;
+      return hit.score.toFixed(2);
     } else if (r.model === "jaccard" || r.model === "tfidf") {
       value = hit.score * 100;
     } else {
@@ -267,7 +269,7 @@ function mount(root, data) {
       const { lead, rest, leadAt, restAt } = split(h.text);
       return `<li class="row" style="--i:${i}" data-rank="${h.rank}" ${h.rank === 1 ? 'data-top="true"' : ""}>
         <div>
-          <p class="procedencia"><span class="rank num">${h.rank}</span><span>Doc. ${esc(h.doc_id)}</span><span class="relevancia" title="Porcentaje de relevancia según el modelo">${relevancePercent(r, h)}</span></p>
+          <p class="procedencia"><span class="rank num">${h.rank}</span><span>Doc. ${esc(h.doc_id)}</span><span class="relevancia" data-tip="${esc(scoreTip(r.model, h, r.terms))}">${relevanceLabel(r, h)}</span></p>
           <p class="lead" lang="en">${marked(lead, h.spans, leadAt)}</p>
           ${rest ? `<p class="snippet" lang="en">${marked(rest, h.spans, restAt)}</p><button class="more" type="button" aria-expanded="false">Ver más</button>` : ""}
         </div>

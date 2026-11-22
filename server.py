@@ -55,6 +55,7 @@ class SearchEngine:
         self.tfidf_idf: dict[str, float] = {}
         self.tfidf_norms: dict[str, float] = {}
         self.bm25_frequencies: dict[str, dict[str, int]] = defaultdict(dict)
+        self.bm25_idf: dict[str, float] = {}
         self.document_lengths: dict[str, int] = {}
         self.average_document_length = 0.0
         self.ready = False
@@ -93,24 +94,39 @@ class SearchEngine:
             tfidf_frequencies = defaultdict(dict)
             bm25_frequencies = defaultdict(dict)
             document_lengths = {}
-            total_length = 0
 
             for document in cleaned:
                 doc_id = document["_id"]
                 text_tokens = self.tokenize(document["text"])
-                bm25_tokens = self.tokenize(f"{document['title']} {document['text']}")
-
-                document_lengths[doc_id] = len(bm25_tokens)
-                total_length += len(bm25_tokens)
                 for term in set(text_tokens):
                     jaccard_index[term].add(doc_id)
                 document_sizes[doc_id] = len(set(text_tokens))
                 for term, frequency in Counter(text_tokens).items():
                     tfidf_frequencies[term][doc_id] = frequency
-                for term, frequency in Counter(bm25_tokens).items():
+
+            bm25_tokens_by_document = {
+                document["_id"]: self.tokenize(document["text"])
+                for document in cleaned
+            }
+            bm25_frequencies = defaultdict(dict)
+            document_lengths = {}
+            for doc_id, tokens in bm25_tokens_by_document.items():
+                document_lengths[doc_id] = len(tokens)
+                for term, frequency in Counter(tokens).items():
                     bm25_frequencies[term][doc_id] = frequency
 
             document_count = len(cleaned)
+            bm25_idf = {}
+            total_length = sum(document_lengths.values())
+            average_document_length = (
+                total_length / document_count if document_count else 0.0
+            )
+            for term, documents_with_term in bm25_frequencies.items():
+                df = len(documents_with_term)
+                bm25_idf[term] = math.log1p(
+                    (document_count - df + 0.5) / (df + 0.5)
+                )
+
             tfidf_index = defaultdict(dict)
             tfidf_idf = {}
             tfidf_norms = defaultdict(float)
@@ -137,9 +153,10 @@ class SearchEngine:
                 self.tfidf_idf = tfidf_idf
                 self.tfidf_norms = tfidf_norms
                 self.bm25_frequencies = bm25_frequencies
+                self.bm25_idf = bm25_idf
                 self.document_lengths = document_lengths
                 self.average_document_length = (
-                    total_length / document_count if document_count else 0.0
+                    average_document_length
                 )
                 self.relevant_ids = set()
                 self.ready = True
@@ -210,16 +227,14 @@ class SearchEngine:
         results.sort(key=lambda item: (-item[1], item[0]))
         return self.format_hits(results[:k], query)
 
-    def search_bm25(self, query: str, k: int, k1: float = 1.5, b: float = 0.75) -> list[dict]:
+    def search_bm25(self, query: str, k: int, k1: float = 1.2, b: float = 0.75) -> list[dict]:
         scores = defaultdict(float)
-        document_count = len(self.documents)
-        query_terms = set(self.tokenize(query))
+        query_terms = dict.fromkeys(self.tokenize(query))
         for term in query_terms:
             document_frequencies = self.bm25_frequencies.get(term, {})
-            df = len(document_frequencies)
-            if not df:
+            if not document_frequencies:
                 continue
-            idf = math.log((document_count - df + 0.5) / (df + 0.5) + 1)
+            idf = self.bm25_idf[term]
             for doc_id, frequency in document_frequencies.items():
                 length = self.document_lengths.get(doc_id, 0)
                 normalization = k1 * (
