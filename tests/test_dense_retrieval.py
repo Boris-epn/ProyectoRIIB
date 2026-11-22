@@ -250,7 +250,7 @@ class ServerConfigurationTests(unittest.TestCase):
             "print([m for m in ('sentence_transformers', 'torch', 'faiss') if m in sys.modules])"
         )
         output = subprocess.run(
-            [sys.executable, "-c", code], cwd=Path(__file__).resolve().parent,
+            [sys.executable, "-c", code], cwd=Path(__file__).resolve().parent.parent,
             capture_output=True, text=True, check=True,
         ).stdout.strip().splitlines()[-1]
         self.assertEqual(output, "[]")

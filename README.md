@@ -54,8 +54,19 @@ Pruebas:
 
 ```powershell
 python -m unittest discover -v
-node test_frontend.cjs
+node tests/test_frontend.cjs
 ```
 
 Las pruebas reales de FAISS y del codificador se omiten cuando esas dependencias
 no están instaladas. Las pruebas de evaluación usan datos controlados sin descargas.
+
+
+## Estructura del proyecto
+
+- `server.py`: servidor Flask, búsqueda y evaluación.
+- `dense_retrieval.py`: embeddings, índice FAISS y preparación de su caché.
+- `front/`: página, estilos, JavaScript y logos utilizados por la interfaz.
+- `tests/`: pruebas de los modelos, las métricas y el frontend.
+- `requirements.txt`: dependencias de Python.
+
+La caché de embeddings se genera en `.cache/` y no se incluye en Git.
