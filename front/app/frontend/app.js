@@ -6,6 +6,7 @@ const MODELOS = [
   { id: "jaccard", name: "Jaccard", hint: "Palabras en común", tip: "Compara los conjuntos de palabras distintas; 1 significa que coinciden por completo." },
   { id: "tfidf", name: "TF-IDF", hint: "Palabras ponderadas por rareza", tip: "Compara palabras y da más peso a las menos frecuentes en FiQA." },
   { id: "bm25", name: "BM25", hint: "Ponderadas y ajustadas por longitud", tip: "Suma aportes de palabras y ajusta repeticiones y largo del documento." },
+  { id: "dense", name: "Embeddings", hint: "Por significado, no por palabras", tip: "Convierte la consulta y cada documento en vectores semánticos y compara su similitud coseno." },
 ];
 const ESPERA_BUSQUEDA = 220;
 const ESPERA_COMPARACION = 450;

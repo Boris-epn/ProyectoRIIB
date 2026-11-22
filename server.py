@@ -1,5 +1,6 @@
 import json
 import math
+import os
 import re
 import threading
 import time
@@ -8,11 +9,24 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
 
+from dense_retrieval import DenseRetriever
+
 
 ROOT = Path(__file__).resolve().parent
 FRONT_DIR = ROOT / "front"
 
 app = Flask(__name__)
+
+
+def env_flag(name: str, default: bool) -> bool:
+    value = os.environ.get(name, "").strip().lower()
+    if not value:
+        return default
+    return value not in {"0", "false", "no", "off"}
+
+
+def format_count(value: int) -> str:
+    return f"{value:,}".replace(",", " ")
 
 
 @app.after_request
@@ -64,6 +78,16 @@ class SearchEngine:
         self.source = ""
         self.lock = threading.RLock()
         self.relevant_ids: set[str] = set()
+        self.evaluation_ready = False
+        self.evaluation_loading = False
+        self.evaluation_error = ""
+        self.evaluation_summary: dict = {}
+        self.evaluation_groups: dict = {}
+        self.evaluation_queries: dict = {}
+        self.evaluation_classified: dict = {}
+        self.dense = DenseRetriever(
+            build_if_missing=env_flag("DENSE_BUILD_IF_MISSING", True),
+        )
 
     def tokenize(self, text: str) -> list[str]:
         return [
@@ -175,6 +199,8 @@ class SearchEngine:
             corpus = load_dataset(dataset_name, "corpus", split=split)
             documents = [dict(document) for document in corpus]
             self.import_documents(documents, f"Hugging Face: {dataset_name}/{split}")
+            if self.ready:
+                self.load_fiqa_evaluation()
         except Exception as exc:
             with self.lock:
                 self.loading = False
@@ -249,6 +275,282 @@ class SearchEngine:
         results = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
         return self.format_hits(results[:k], query)
 
+    def search_dense(self, query: str, k: int) -> list[dict]:
+        return self.format_hits(self.dense.search(query, k), query)
+
+    def dense_ready(self) -> bool:
+        return self.dense.ensure_ready(self.documents)
+
+    def dense_status(self) -> dict:
+        status = self.dense.status()
+        state = status["state"]
+        if state == "ready":
+            message = ""
+        elif state == "building":
+            message = (
+                f"Generando embeddings… "
+                f"{format_count(status['done'])}/{format_count(status['total'])}"
+            )
+        elif state == "error":
+            message = f"Error en el índice semántico: {status['error']}"
+        else:
+            message = "Cargando índice semántico…"
+        return {**status, "message": message}
+
+    def ranking_jaccard(self, query: str, k: int) -> list[tuple[str, float]]:
+        query_terms = set(self.tokenize(query))
+        intersections = Counter()
+        for term in query_terms:
+            intersections.update(self.jaccard_index.get(term, ()))
+        results = []
+        for doc_id, intersection in intersections.items():
+            document_size = self.document_sizes[doc_id]
+            union = document_size + len(query_terms) - intersection
+            score = intersection / union if union else 0.0
+            results.append((doc_id, score))
+        results.sort(key=lambda item: (-item[1], item[0]))
+        return results[:k]
+
+    def ranking_tfidf(self, query: str, k: int) -> list[tuple[str, float]]:
+        query_weights = {
+            term: frequency * self.tfidf_idf[term]
+            for term, frequency in Counter(self.tokenize(query)).items()
+            if term in self.tfidf_idf
+        }
+        if not query_weights:
+            return []
+        query_norm = math.sqrt(sum(weight * weight for weight in query_weights.values()))
+        products = defaultdict(float)
+        for term, query_weight in query_weights.items():
+            for doc_id, document_weight in self.tfidf_index[term].items():
+                products[doc_id] += query_weight * document_weight
+        results = []
+        for doc_id, product in products.items():
+            norm = self.tfidf_norms.get(doc_id)
+            if norm:
+                results.append((doc_id, product / (query_norm * norm)))
+        results.sort(key=lambda item: (-item[1], item[0]))
+        return results[:k]
+
+    def ranking_bm25(self, query: str, k: int, k1: float = 1.2, b: float = 0.75) -> list[tuple[str, float]]:
+        scores = defaultdict(float)
+        for term in dict.fromkeys(self.tokenize(query)):
+            document_frequencies = self.bm25_frequencies.get(term, {})
+            if not document_frequencies:
+                continue
+            idf = self.bm25_idf[term]
+            for doc_id, frequency in document_frequencies.items():
+                length = self.document_lengths.get(doc_id, 0)
+                normalization = k1 * (
+                    1 - b + b * length / self.average_document_length
+                    if self.average_document_length
+                    else k1
+                )
+                scores[doc_id] += idf * frequency * (k1 + 1) / (frequency + normalization)
+        results = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+        return results[:k]
+
+    @staticmethod
+    def dcg(grades: list[int]) -> float:
+        return sum(
+            (2 ** grade - 1) / math.log2(position + 1)
+            for position, grade in enumerate(grades, start=1)
+        )
+
+    def evaluate_ranking(self, ranking: list[tuple[str, float]], judgments: dict[str, int], cuts=(5, 10, 20)) -> dict:
+        total_relevant = sum(grade >= 1 for grade in judgments.values())
+        ideal_grades = sorted(judgments.values(), reverse=True)
+        ranking_grades = []
+        cumulative_hits = [0]
+        hits = 0
+        precision_sum = 0.0
+        maximum_cut = max(cuts)
+
+        for position, (doc_id, _) in enumerate(ranking, start=1):
+            grade = judgments.get(str(doc_id), 0)
+            if grade >= 1:
+                hits += 1
+                precision_sum += hits / position
+            if position <= maximum_cut:
+                ranking_grades.append(grade)
+                cumulative_hits.append(hits)
+
+        metrics = {"AP": precision_sum / total_relevant if total_relevant else 0.0}
+        for cut in cuts:
+            hits_cut = cumulative_hits[min(cut, len(ranking_grades))]
+            ideal_cut = self.dcg(ideal_grades[:cut])
+            metrics[f"Precision@{cut}"] = hits_cut / cut
+            metrics[f"Recall@{cut}"] = hits_cut / total_relevant if total_relevant else 0.0
+            metrics[f"NDCG@{cut}"] = (
+                self.dcg(ranking_grades[:cut]) / ideal_cut if ideal_cut else 0.0
+            )
+        return metrics
+
+    def evaluate_cuts(self, cuts: tuple[int, ...]) -> dict:
+        if not 1 <= len(cuts) <= 3:
+            raise ValueError("Ingresa de uno a tres cortes.")
+        if any(type(cut) is not int or cut <= 0 for cut in cuts):
+            raise ValueError("Cada corte debe ser un entero positivo.")
+        if len(set(cuts)) != len(cuts):
+            raise ValueError("Los cortes deben ser distintos.")
+
+        rankers = {
+            "Jaccard": lambda text: self.ranking_jaccard(text, len(self.documents)),
+            "TF-IDF": lambda text: self.ranking_tfidf(text, len(self.documents)),
+            "BM25": lambda text: self.ranking_bm25(text, len(self.documents)),
+        }
+        per_query = {}
+        summary = {}
+        classified = self.evaluation_classified
+        for model_name, ranker in rankers.items():
+            detail = {}
+            for query_id, data in classified.items():
+                ranking = ranker(data["text"])
+                detail[query_id] = self.evaluate_ranking(
+                    ranking,
+                    data["judgments"],
+                    cuts,
+                )
+            per_query[model_name] = detail
+            if not detail:
+                summary[model_name] = {"MAP": 0.0}
+                continue
+            model_summary = {
+                "MAP": sum(row["AP"] for row in detail.values()) / len(detail)
+            }
+            for cut in cuts:
+                for metric in ("Precision", "Recall", "NDCG"):
+                    column = f"{metric}@{cut}"
+                    model_summary[column] = sum(row[column] for row in detail.values()) / len(detail)
+            summary[model_name] = model_summary
+        return {"summary": summary, "per_query": per_query}
+
+    def classify_query_type(self, text: str) -> str:
+        patterns = (
+            ("comparacion", re.compile(r"\b(?:difference[s]? between|compar(?:e|ed|ison)|better than|versus|vs)\b", re.I)),
+            ("definicion", re.compile(r"^\s*what (?:(?:is|are)\b|does .+ mean\b)|\bmeaning of\b", re.I)),
+            ("procedimiento", re.compile(r"^\s*how (?:do|can|should|could) (?:i|we|you|one)\b|^\s*how to\b", re.I)),
+            ("explicacion", re.compile(r"^\s*(?:why\b|how (?:does|do|did)\b)", re.I)),
+        )
+        for query_type, pattern in patterns:
+            if pattern.search(text):
+                return query_type
+        return "otras"
+
+    def load_fiqa_evaluation(self) -> None:
+        with self.lock:
+            if self.evaluation_loading:
+                return
+            self.evaluation_loading = True
+            self.evaluation_ready = False
+            self.evaluation_error = ""
+        try:
+            from datasets import load_dataset
+
+            queries = load_dataset("BeIR/fiqa", "queries", split="queries")
+            qrels = load_dataset("BeIR/fiqa-qrels", split="test")
+
+            query_text = {
+                str(row["_id"]): str(row["text"])
+                for row in queries
+            }
+            judgments = defaultdict(dict)
+            for row in qrels:
+                judgments[str(row["query-id"])][str(row["corpus-id"])] = int(row["score"])
+
+            classified = {}
+            lengths = []
+            for query_id, query_judgments in sorted(judgments.items()):
+                text = query_text.get(query_id)
+                if text is None:
+                    continue
+                token_count = len(self.tokenize(text))
+                length = token_count
+                lengths.append(length)
+                classified[query_id] = {
+                    "text": text,
+                    "judgments": query_judgments,
+                    "token_count": length,
+                    "query_type": self.classify_query_type(text),
+                }
+
+            lengths.sort()
+            count = len(lengths)
+            short_cut = lengths[(count + 2) // 3 - 1] if count else 0
+            medium_cut = lengths[(2 * count + 2) // 3 - 1] if count else 0
+            groups = {
+                "length": {"cortas": [], "medianas": [], "largas": []},
+                "type": {"comparacion": [], "definicion": [], "procedimiento": [], "explicacion": [], "otras": []},
+            }
+            for query_id, data in classified.items():
+                if data["token_count"] <= short_cut:
+                    length_group = "cortas"
+                elif data["token_count"] <= medium_cut:
+                    length_group = "medianas"
+                else:
+                    length_group = "largas"
+                data["length_group"] = length_group
+                groups["length"][length_group].append(query_id)
+                groups["type"][data["query_type"]].append(query_id)
+
+            cutoffs = (5, 10, 20)
+            per_query = {}
+            summary = {}
+            rankers = {
+                "Jaccard": lambda text: self.ranking_jaccard(text, len(self.documents)),
+                "TF-IDF": lambda text: self.ranking_tfidf(text, len(self.documents)),
+                "BM25": lambda text: self.ranking_bm25(text, len(self.documents)),
+            }
+            for model_name, ranker in rankers.items():
+                detail = {}
+                for query_id, data in classified.items():
+                    ranking = ranker(data["text"])
+                    detail[query_id] = self.evaluate_ranking(ranking, data["judgments"], cutoffs)
+                per_query[model_name] = detail
+                if not detail:
+                    summary[model_name] = {"MAP": 0.0}
+                    continue
+                model_summary = {
+                    "MAP": sum(row["AP"] for row in detail.values()) / len(detail)
+                }
+                for cut in cutoffs:
+                    for metric in ("Precision", "Recall", "NDCG"):
+                        column = f"{metric}@{cut}"
+                        model_summary[column] = sum(row[column] for row in detail.values()) / len(detail)
+                summary[model_name] = model_summary
+
+            with self.lock:
+                self.evaluation_ready = True
+                self.evaluation_summary = summary
+                self.evaluation_classified = classified
+                self.evaluation_groups = {
+                    "cuts": {"short": short_cut, "medium": medium_cut},
+                    "length": groups["length"],
+                    "type": groups["type"],
+                }
+                self.evaluation_queries = {
+                    query_id: {
+                        "text": data["text"],
+                        "token_count": data["token_count"],
+                        "length_group": data["length_group"],
+                        "query_type": data["query_type"],
+                        "judgment_count": len(data["judgments"]),
+                        "metrics": {
+                            model_name: per_query[model_name][query_id]
+                            for model_name in per_query
+                            if query_id in per_query[model_name]
+                        },
+                    }
+                    for query_id, data in classified.items()
+                }
+        except Exception as exc:
+            with self.lock:
+                self.evaluation_ready = False
+                self.evaluation_error = str(exc)
+        finally:
+            with self.lock:
+                self.evaluation_loading = False
+
     def format_hits(self, results: list[tuple[str, float]], query: str) -> list[dict]:
         hits = []
         terms = set(self.tokenize(query))
@@ -283,6 +585,8 @@ class SearchEngine:
                 return self.search_tfidf(query, k)
             if model == "bm25":
                 return self.search_bm25(query, k)
+            if model == "dense":
+                return self.search_dense(query, k)
             return []
 
     def suggestion(self, query: str) -> str:
@@ -349,6 +653,8 @@ def corpus_status():
             "error": engine.error,
             "count": len(engine.documents),
             "source": engine.source,
+            "dense": engine.dense_status(),
+            "dense": engine.dense_status(),
         })
 
 
@@ -429,6 +735,20 @@ def search():
             "error": status,
         })
 
+    if model == "dense" and not engine.dense_ready():
+        dense_status = engine.dense_status()
+        return jsonify({
+            "seq": seq,
+            "key": f"{model}|{k}|{query}",
+            "model": model,
+            "elapsed_ms": (time.perf_counter() - started) * 1000,
+            "terms": engine.tokenize(query),
+            "suggestion": "",
+            "hits": [],
+            "error": dense_status["message"],
+            "dense": dense_status,
+        })
+
     hits = engine.search(query, model, k)
     return jsonify({
         "seq": seq,
@@ -455,10 +775,12 @@ def compare():
             "loading": engine.loading,
             "results": {},
         })
+    dense_ready = engine.dense_ready()
     results = {
         model: engine.search(query, model, k)
         for model in ("jaccard", "tfidf", "bm25")
     }
+    results["dense"] = engine.search(query, "dense", k) if dense_ready else []
     relevant_ids = {
         hit["doc_id"]
         for hit in results["bm25"][:k]
@@ -479,17 +801,47 @@ def compare():
         "reference": "bm25",
         "results": results,
         "metrics": metrics,
+        "dense": engine.dense_status(),
     })
 
 
 @app.route("/api/metrics", methods=["GET"])
 def metrics():
-    return jsonify({
-        "available": engine.ready,
-        "document_count": len(engine.documents),
-        "term_count": len(engine.tfidf_idf),
-        "source": engine.source,
-    })
+    cuts_raw = request.args.get("cuts", "")
+    cuts = tuple(
+        int(value)
+        for value in cuts_raw.split(",")
+        if value.strip()
+    ) if cuts_raw else (5, 10, 20)
+    cut_error = None
+    if not 1 <= len(cuts) <= 3:
+        cut_error = "Ingresa de uno a tres cortes."
+    elif any(type(cut) is not int or cut <= 0 for cut in cuts):
+        cut_error = "Cada corte debe ser un entero positivo."
+    elif len(set(cuts)) != len(cuts):
+        cut_error = "Los cortes deben ser distintos."
+
+    dynamic = None
+    if cut_error is None:
+        dynamic = engine.evaluate_cuts(cuts)
+
+    with engine.lock:
+        return jsonify({
+            "available": engine.ready,
+            "document_count": len(engine.documents),
+            "term_count": len(engine.tfidf_idf),
+            "source": engine.source,
+            "evaluation_ready": engine.evaluation_ready,
+            "evaluation_loading": engine.evaluation_loading,
+            "evaluation_error": engine.evaluation_error,
+            "summary": engine.evaluation_summary,
+            "dynamic_summary": dynamic["summary"] if dynamic else engine.evaluation_summary,
+            "dynamic_per_query": dynamic["per_query"] if dynamic else {},
+            "dynamic_cuts": list(cuts),
+            "cut_error": cut_error,
+            "groups": engine.evaluation_groups,
+            "queries": engine.evaluation_queries,
+        })
 
 
 if __name__ == "__main__":
